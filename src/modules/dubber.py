@@ -69,7 +69,7 @@ class TTSModule:
             # Retorna duração real para logs
             return librosa.get_duration(path=output_path)
         except Exception as e:
-            self.log(f"❌ Erro TTS: {e}")
+            self.log(f"Erro TTS: {e}")
             return 0.0
 
 # ==========================================
@@ -94,7 +94,7 @@ class AudioEngine:
             self.log(f"⚠️ Erro no Vocal Chain: {e}")
 
     def create_ducking_track(self, original_audio_path: str, segments: List[Dict], output_path: str):
-        self.log("🎚️ Aplicando Ducking (Algoritmo Linear)...")
+        self.log("Aplicando Ducking (Algoritmo Linear)...")
         original = AudioSegment.from_file(original_audio_path)
         
         if not segments:
@@ -158,12 +158,12 @@ class Dubber:
         self.base_dir = Path("workspace_universal")
         self.base_dir.mkdir(exist_ok=True)
         
-        self.log(f"🚀 DubberPro UNIVERSAL iniciado em: {self.device.upper()}")
+        self.log(f"Dubber PRO iniciado em: {self.device.upper()}")
         
         # OTIMIZAÇÃO 1: Faster Whisper (mais rápido e gasta menos RAM)
         # compute_type="float16" (GPU) ou "int8" (CPU/Mais rápido)
         compute_type = "float16" if self.device == "cuda" else "int8"
-        self.whisper = WhisperModel("small", device=self.device, compute_type=compute_type)
+        self.whisper = WhisperModel("tiny", device=self.device, compute_type=compute_type)
         
         self.translator = TranslationModule(self.device)
         self.tts = TTSModule(logger=self.log)
@@ -184,7 +184,7 @@ class Dubber:
                 return True
             return False
         except Exception as e:
-            self.log(f"❌ Erro na thread: {e}")
+            self.log(f"Erro na thread: {e}")
             return False
 
     def process(self, video_path: str, use_cache: bool = True):
@@ -195,7 +195,7 @@ class Dubber:
         # 1. Extração
         orig_audio_path = project_dir / "original.wav"
         if not (use_cache and orig_audio_path.exists()):
-            self.log("🔊 Extraindo áudio original...")
+            self.log("Extraindo áudio original...")
             with VideoFileClip(str(video_path)) as video:
                 video.audio.write_audiofile(str(orig_audio_path), fps=44100, nbytes=2, codec='pcm_s16le', logger=None)
         
@@ -205,7 +205,7 @@ class Dubber:
             with open(segments_cache, 'r', encoding='utf-8') as f:
                 segments = json.load(f)
         else:
-            self.log(f"📝 Transcrevendo (Faster-Whisper / {self.device})...")
+            self.log(f"Transcrevendo (pode demorar)...")
             
             # Faster-Whisper retorna um gerador
             segments_gen, info = self.whisper.transcribe(
@@ -223,7 +223,7 @@ class Dubber:
                     "text": seg.text.strip()
                 })
 
-            self.log(f"🌍 Traduzindo {len(segments)} segmentos...")
+            self.log(f"Traduzindo {len(segments)} segmentos...")
             batch_size = 32 if self.device != "cpu" else 8
             
             # Processamento em lote da tradução
@@ -238,7 +238,7 @@ class Dubber:
                 json.dump(segments, f, ensure_ascii=False, indent=2)
 
         # 3. Geração de Áudio (OTIMIZAÇÃO 2: Multithreading)
-        self.log(f"🎙️ Gerando vozes (Pool de 5 Threads)...")
+        self.log(f"Gerando vozes (Pool de 8 Threads)...")
         audio_chunks_dir = project_dir / "chunks"
         audio_chunks_dir.mkdir(exist_ok=True)
         
@@ -250,15 +250,15 @@ class Dubber:
                 tasks_to_process.append((seg['text_pt'], str(chunk_path), duration))
 
         if tasks_to_process:
-            self.log(f"🔥 Processando {len(tasks_to_process)} novos áudios...")
+            self.log(f"Processando {len(tasks_to_process)} novos áudios...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 # O list() força a espera de todas as tarefas completarem
                 list(executor.map(self._worker_generate_audio, tasks_to_process))
         else:
-            self.log("✅ Áudios em cache.")
+            self.log("Áudios em cache.")
 
         # 3.1 Carregamento Seguro (Pós-Threads)
-        self.log("🎞️ Montando clipes de áudio...")
+        self.log("Montando clipes de áudio...")
         dub_clips = []
         for i, seg in enumerate(segments):
             chunk_path = audio_chunks_dir / f"seg_{i:04d}.wav"
@@ -271,7 +271,7 @@ class Dubber:
             self.audio_engine.create_ducking_track(str(orig_audio_path), segments, str(ducked_bg_path))
         
         # 5. Renderização (OTIMIZAÇÃO 3: FFmpeg Direto)
-        self.log("🎬 Renderizando Final (Modo Rápido: Cópia de Vídeo)...")
+        self.log("Renderizando vídeo...")
         
         # Primeiro, geramos apenas o áudio final mixado usando MoviePy (rápido)
         final_audio_path = project_dir / "final_mix.wav"
@@ -310,7 +310,7 @@ class Dubber:
             
             # Executa silenciosamente
             subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            self.log(f"✅ Renderização Instantânea concluída: {output_video}")
+            self.log(f"Renderização instantânea concluída: {output_video}")
             
         except (subprocess.CalledProcessError, FileNotFoundError):
             self.log("⚠️ FFmpeg não encontrado ou erro. Usando renderizador lento (fallback)...")
