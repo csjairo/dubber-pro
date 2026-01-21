@@ -147,7 +147,7 @@ class TranslationModule:
 # ==========================================
 # 5. ORQUESTRADOR UNIVERSAL
 # ==========================================
-class DubberPro:
+class Dubber:
     def __init__(self, logger_func=None):
         self.logger = logger_func
         self.device = get_best_device()

@@ -12,7 +12,7 @@ from PyQt6.QtGui import QFont, QIcon
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 try:
-    from dubber_pro.dubber_pro import DubberPro
+    from modules.dubber import Dubber
 except ImportError as e:
     # Mostra o erro real para facilitar o debug
     print(f"Erro de importação: {e}")
@@ -41,7 +41,7 @@ class DubbingWorker(QThread):
             self.log_signal.emit("⏳ Inicializando DubberPro e carregando modelos...")
             
             # Instancia o DubberPro passando o logger da GUI
-            dubber = DubberPro(logger_func=gui_logger)
+            dubber = Dubber(logger_func=gui_logger)
             
             # Define o diretório base como o diretório do arquivo de entrada
             input_p = Path(self.input_path)
