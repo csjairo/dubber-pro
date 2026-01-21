@@ -251,7 +251,7 @@ class Dubber:
 
         if tasks_to_process:
             self.log(f"🔥 Processando {len(tasks_to_process)} novos áudios...")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 # O list() força a espera de todas as tarefas completarem
                 list(executor.map(self._worker_generate_audio, tasks_to_process))
         else:
