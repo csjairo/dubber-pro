@@ -8,14 +8,15 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QFont, QIcon
 
-# Garante que o Python encontre o módulo dubber_pro no diretório src
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# CORREÇÃO 1: Adiciona 'src' ao path para encontrar o pacote 'dubber_pro'
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 try:
     from dubber_pro.dubber_pro import DubberPro
-except ImportError:
-    # Fallback caso a execução seja feita de outro diretório
-    print("Erro de importação: Verifique se está rodando a partir da raiz ou de src.")
+except ImportError as e:
+    # Mostra o erro real para facilitar o debug
+    print(f"Erro de importação: {e}")
+    print("Verifique se a pasta 'src' existe e contém o pacote 'dubber_pro'.")
     sys.exit(1)
 
 # ==========================================

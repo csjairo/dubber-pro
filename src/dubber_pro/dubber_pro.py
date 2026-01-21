@@ -21,9 +21,6 @@ def get_best_device():
         return "cuda"  # NVIDIA
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"   # Apple Silicon (M1/M2/M3)
-    # Para AMD/Intel no Windows, o PyTorch usa DirectML (requer torch-directml)
-    # Mas o Whisper padrão e Transformers usam CPU se não houver CUDA/MPS.
-    # A solução universal é garantir que o código não quebre e use o que puder.
     return "cpu"
 
 # ==========================================
@@ -82,17 +79,49 @@ class AudioEngine:
         except Exception as e:
             self.log(f"⚠️ Erro no Vocal Chain: {e}")
 
+    # CORREÇÃO 3: Lógica Otimizada (Linear) para Ducking
     def create_ducking_track(self, original_audio_path: str, segments: List[Dict], output_path: str):
-        self.log("🎚️ Aplicando Ducking...")
+        self.log("🎚️ Aplicando Ducking (Algoritmo Otimizado)...")
         original = AudioSegment.from_file(original_audio_path)
-        ducked_audio = original
-        FADE_TIME, DUCK_VOL = 300, -15
-        for seg in sorted(segments, key=lambda x: x['start']):
+        
+        if not segments:
+            original.export(output_path, format="wav", parameters=["-ar", "44100"])
+            return
+
+        FADE_TIME = 300
+        DUCK_VOL = -15
+        
+        # Ordena segmentos e garante que não há sobreposições estranhas
+        sorted_segs = sorted(segments, key=lambda x: x['start'])
+        
+        final_parts = []
+        current_pos = 0
+        
+        for seg in sorted_segs:
             start_ms = max(0, int(seg['start'] * 1000) - 150)
             end_ms = min(len(original), int(seg['end'] * 1000) + 150)
+            
             if start_ms >= end_ms: continue
-            duck_part = original[start_ms:end_ms].apply_gain(DUCK_VOL).fade_in(FADE_TIME).fade_out(FADE_TIME)
-            ducked_audio = ducked_audio[:start_ms] + duck_part + ducked_audio[end_ms:]
+            
+            # Adiciona parte limpa antes do segmento atual
+            if start_ms > current_pos:
+                final_parts.append(original[current_pos:start_ms])
+            
+            # Processa e adiciona a parte "ducked"
+            # Se houver overlap com o anterior, ajustamos (simplificado aqui para corte direto)
+            if end_ms > current_pos:
+                # O start efetivo é max(start_ms, current_pos) para evitar repetição se houver overlap
+                effective_start = max(start_ms, current_pos)
+                duck_part = original[effective_start:end_ms].apply_gain(DUCK_VOL).fade_in(FADE_TIME).fade_out(FADE_TIME)
+                final_parts.append(duck_part)
+                current_pos = end_ms
+        
+        # Adiciona o restante do áudio após o último segmento
+        if current_pos < len(original):
+            final_parts.append(original[current_pos:])
+            
+        # Concatena tudo de uma vez (muito mais rápido que loop iterativo)
+        ducked_audio = sum(final_parts)
         ducked_audio.export(output_path, format="wav", parameters=["-ar", "44100"])
 
 # ==========================================
@@ -100,12 +129,12 @@ class AudioEngine:
 # ==========================================
 class TranslationModule:
     def __init__(self, device="cpu"):
+        # Verificado: Este modelo existe e requer sentencepiece
         model_name = 'Helsinki-NLP/opus-mt-tc-big-en-pt'
         self.device = device
         self.tokenizer = MarianTokenizer.from_pretrained(model_name)
         self.model = MarianMTModel.from_pretrained(model_name).to(self.device)
         
-        # Se for GPU (NVIDIA ou Apple), usa precisão mista para velocidade
         if self.device in ["cuda", "mps"]:
             self.model = self.model.half()
 
@@ -127,10 +156,7 @@ class DubberPro:
         
         self.log(f"🚀 DubberPro UNIVERSAL iniciado em: {self.device.upper()}")
         
-        # Whisper detecta automaticamente CUDA ou CPU. 
-        # Para AMD/Intel, ele usará CPU de forma otimizada via bibliotecas BLAS.
         self.whisper = whisper.load_model("small", device=self.device)
-        
         self.translator = TranslationModule(self.device)
         self.tts = TTSModule(logger=self.log)
         self.audio_engine = AudioEngine(logger=self.log)
@@ -151,14 +177,13 @@ class DubberPro:
             with VideoFileClip(str(video_path)) as video:
                 video.audio.write_audiofile(str(orig_audio_path), fps=44100, nbytes=2, codec='pcm_s16le', logger=None)
         
-        # 2. Transcrição (Auto-detecção de Hardware)
+        # 2. Transcrição
         segments_cache = project_dir / "segments.json"
         if use_cache and segments_cache.exists():
             with open(segments_cache, 'r', encoding='utf-8') as f:
                 segments = json.load(f)
         else:
             self.log(f"📝 Transcrevendo ({self.device})...")
-            # fp16=True apenas para CUDA. Para outros, False garante compatibilidade.
             result = self.whisper.transcribe(str(orig_audio_path), language="en", fp16=(self.device == "cuda"))
             segments = result['segments']
 
@@ -182,6 +207,7 @@ class DubberPro:
         for i, seg in enumerate(segments):
             chunk_path = audio_chunks_dir / f"seg_{i:04d}.wav"
             if not (use_cache and chunk_path.exists()):
+                # Nota: generate_audio chama asyncio.run, o que é aceitável aqui pois estamos numa Thread dedicada
                 self.tts.generate_audio(seg['text_pt'], str(chunk_path), target_duration=seg['end'] - seg['start'])
                 self.audio_engine.apply_vocal_chain(str(chunk_path))
             dub_clips.append(AudioFileClip(str(chunk_path)).with_start(seg['start']))
@@ -191,22 +217,22 @@ class DubberPro:
         if not (use_cache and ducked_bg_path.exists()):
             self.audio_engine.create_ducking_track(str(orig_audio_path), segments, str(ducked_bg_path))
         
-        # 5. Renderização Final Otimizada
+        # 5. Renderização Final
         self.log("🎬 Renderizando (Multi-core Hardware)...")
         with VideoFileClip(str(video_path)) as video:
             bg_clip = AudioFileClip(str(ducked_bg_path))
             final_audio = CompositeAudioClip([bg_clip] + dub_clips).with_duration(video.duration)
             output_video = self.base_dir / f"{video_path.stem}_UNIVERSAL_DUB.mp4"
             
-            # Otimização de Renderização:
-            # - threads: Usa todos os núcleos da CPU (AMD/Intel/NVIDIA)
-            # - preset: 'ultrafast' para velocidade máxima
+            # CORREÇÃO 4: cpu_count() pode ser None. Fallback seguro.
+            threads_count = os.cpu_count() or 4
+            
             final_video = video.with_audio(final_audio)
             final_video.write_videofile(
                 str(output_video), 
                 codec="libx264", 
                 audio_codec="aac", 
-                threads=os.cpu_count(), 
+                threads=threads_count, 
                 preset="ultrafast",
                 logger=None
             )
