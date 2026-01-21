@@ -212,8 +212,3 @@ class DubberPro:
             )
             
         self.log(f"✅ Sucesso! Salvo em: {output_video}")
-
-if __name__ == "__main__":
-    dubber = DubberPro()
-    dubber.process("video.mp4")
-    pass
