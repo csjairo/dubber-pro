@@ -66,7 +66,7 @@ class DubbingWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dubber Pro - Interface PyQt6")
+        self.setWindowTitle("Dubber PRO — Dublagem de Vídeos")
         self.resize(800, 600)
         
         # Variável para guardar o caminho do arquivo
