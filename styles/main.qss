@@ -1,0 +1,82 @@
+/* =======================================================
+   JANELA PRINCIPAL E FRAMES
+   ======================================================= */
+QMainWindow { 
+    background-color: #f8f9fa; 
+}
+
+QFrame#headerFrame, QFrame#cardFrame, QFrame#logFrame {
+    background-color: white; 
+    border-radius: 10px; 
+    border: 1px solid #e9ecef;
+}
+
+QFrame#fileContainer {
+    background-color: #f8f9fa; 
+    border-radius: 8px; 
+    border: 2px dashed #dee2e6;
+}
+
+/* =======================================================
+   TIPOGRAFIA E LABELS
+   ======================================================= */
+QLabel#lblTitle {
+    color: #6a11cb; 
+    margin-bottom: 5px;
+}
+
+QLabel#lblSubtitle {
+    color: #888; 
+    margin-bottom: 10px;
+}
+
+QLabel#lblCardTitle {
+    color: #6a11cb; 
+    margin-bottom: 15px;
+}
+
+QLabel#lblFile {
+    color: #666;
+}
+
+QLabel#lblLogHeader {
+    color: #6a11cb;
+}
+
+/* =======================================================
+   BOTÕES
+   ======================================================= */
+/* Botões Primários (Roxo) */
+QPushButton#primaryButton, QPushButton#actionButton {
+    background-color: #6a11cb; 
+    color: white; 
+    font-weight: bold; 
+    border-radius: 8px; 
+    border: none;
+}
+
+QPushButton#primaryButton:hover, QPushButton#actionButton:hover { 
+    background-color: #5a0db0; 
+}
+
+QPushButton#actionButton:disabled { 
+    background-color: #b19cd9; 
+}
+
+/* Botões Secundários (Cinza) */
+QPushButton#secondaryButton {
+    background-color: #f0f0f0; 
+    color: #6a11cb; 
+    border: 1px solid #ddd; 
+    border-radius: 6px;
+}
+
+/* =======================================================
+   CONSOLE DE LOGS
+   ======================================================= */
+QTextEdit#logConsole {
+    background-color: #0d1117; 
+    color: #00ff88; 
+    border-radius: 8px; 
+    border: 1px solid #30363d;
+}

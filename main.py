@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QTextEdit, 
                              QFileDialog, QMessageBox, QFrame)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
-from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
+from PyQt6.QtGui import QFont
 
 # Garante que módulos sejam encontrados
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
@@ -18,7 +18,7 @@ except ImportError as e:
     sys.exit(1)
 
 # ==========================================
-# WORKER THREAD
+# WORKER THREAD (Mantido igual)
 # ==========================================
 class DubbingWorker(QThread):
     log_signal = pyqtSignal(str)
@@ -35,18 +35,9 @@ class DubbingWorker(QThread):
                 self.log_signal.emit(msg)
 
             self.log_signal.emit("Inicializando Dubber PRO...")
-            
             dubber = Dubber(logger_func=gui_logger)
-            
-            # O Dubber agora gerencia suas próprias pastas temporárias.
-            # Não definimos base_dir manualmente.
-            
             input_p = Path(self.input_path)
-            
-            # O process retorna o caminho do arquivo final
             final_file_path = dubber.process(str(input_p))
-            
-            # Emitimos o diretório pai (onde o arquivo final foi salvo)
             self.finished_signal.emit(str(Path(final_file_path).parent))
             
         except Exception as e:
@@ -55,14 +46,16 @@ class DubbingWorker(QThread):
             self.error_signal.emit(error_msg)
 
 # ==========================================
-# JANELA PRINCIPAL (Sem alterações lógicas profundas, apenas a Worker acima mudou)
+# JANELA PRINCIPAL
 # ==========================================
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dubber PRO — Dublagem de Vídeos")
         self.resize(900, 700)
-        self.apply_styles()
+        
+        # Carrega os estilos do arquivo externo
+        self.load_styles()
         
         self.selected_file = None
         
@@ -78,15 +71,15 @@ class MainWindow(QMainWindow):
         header_layout = QVBoxLayout(header_frame)
         
         lbl_title = QLabel("Dubber Pro")
+        lbl_title.setObjectName("lblTitle") # ID para o CSS
         lbl_title.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
         lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_title.setStyleSheet("color: #6a11cb; margin-bottom: 5px;")
         header_layout.addWidget(lbl_title)
         
         lbl_subtitle = QLabel("DUBLAGEM AUTOMÁTICA DE VÍDEOS COM IA.")
+        lbl_subtitle.setObjectName("lblSubtitle") # ID para o CSS
         lbl_subtitle.setFont(QFont("Segoe UI", 10))
         lbl_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_subtitle.setStyleSheet("color: #888; margin-bottom: 10px;")
         header_layout.addWidget(lbl_subtitle)
         layout.addWidget(header_frame)
 
@@ -97,8 +90,8 @@ class MainWindow(QMainWindow):
         card_layout.setContentsMargins(20, 20, 20, 20)
         
         lbl_card_title = QLabel("Seleção de Vídeo")
+        lbl_card_title.setObjectName("lblCardTitle") # ID para o CSS
         lbl_card_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        lbl_card_title.setStyleSheet("color: #6a11cb; margin-bottom: 15px;")
         card_layout.addWidget(lbl_card_title)
         
         selection_layout = QHBoxLayout()
@@ -116,9 +109,9 @@ class MainWindow(QMainWindow):
         file_layout.setContentsMargins(15, 0, 15, 0)
         
         self.lbl_file = QLabel("NENHUM ARQUIVO SELECIONADO.")
+        self.lbl_file.setObjectName("lblFile") # ID para o CSS
         self.lbl_file.setFont(QFont("Segoe UI", 10))
         self.lbl_file.setMinimumHeight(45)
-        self.lbl_file.setStyleSheet("color: #666;")
         file_layout.addWidget(self.lbl_file)
         
         selection_layout.addWidget(file_container, stretch=1)
@@ -142,8 +135,8 @@ class MainWindow(QMainWindow):
         
         log_header = QHBoxLayout()
         lbl_log = QLabel("Log de Processamento")
+        lbl_log.setObjectName("lblLogHeader") # ID para o CSS
         lbl_log.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        lbl_log.setStyleSheet("color: #6a11cb;")
         log_header.addWidget(lbl_log)
         
         self.btn_clear = QPushButton("Limpar")
@@ -162,32 +155,19 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.txt_log)
         layout.addWidget(log_frame)
 
-    def apply_styles(self):
-        style = """
-        QMainWindow { background-color: #f8f9fa; }
-        QFrame#headerFrame, QFrame#cardFrame, QFrame#logFrame {
-            background-color: white; border-radius: 10px; border: 1px solid #e9ecef;
-        }
-        QPushButton#primaryButton {
-            background-color: #6a11cb; color: white; font-weight: bold; border-radius: 8px; border: none;
-        }
-        QPushButton#primaryButton:hover { background-color: #5a0db0; }
-        QPushButton#actionButton {
-            background-color: #6a11cb; color: white; font-weight: bold; border-radius: 8px; border: none;
-        }
-        QPushButton#actionButton:hover { background-color: #5a0db0; }
-        QPushButton#actionButton:disabled { background-color: #b19cd9; }
-        QPushButton#secondaryButton {
-            background-color: #f0f0f0; color: #6a11cb; border: 1px solid #ddd; border-radius: 6px;
-        }
-        QFrame#fileContainer {
-            background-color: #f8f9fa; border-radius: 8px; border: 2px dashed #dee2e6;
-        }
-        QTextEdit#logConsole {
-            background-color: #0d1117; color: #00ff88; border-radius: 8px; border: 1px solid #30363d;
-        }
-        """
-        self.setStyleSheet(style)
+    def load_styles(self):
+        """Lê o arquivo .qss da pasta styles e aplica à janela."""
+        # Usa caminho relativo ao arquivo main.py para achar a pasta styles
+        style_path = Path(__file__).parent / "styles" / "main.qss"
+        
+        try:
+            if style_path.exists():
+                with open(style_path, "r", encoding="utf-8") as f:
+                    self.setStyleSheet(f.read())
+            else:
+                print(f"⚠️ Aviso: Arquivo de estilo não encontrado em {style_path}")
+        except Exception as e:
+            print(f"❌ Erro ao carregar estilos: {e}")
 
     def select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -196,7 +176,8 @@ class MainWindow(QMainWindow):
         if file_path:
             self.selected_file = file_path
             self.lbl_file.setText(f"✓ {os.path.basename(file_path)}")
-            self.lbl_file.setStyleSheet("color: #28a745; font-weight: bold;")
+            # Estilo dinâmico de sucesso sobrescreve o padrão
+            self.lbl_file.setStyleSheet("color: #28a745; font-weight: bold;") 
             self.btn_run.setEnabled(True)
 
     def start_dubbing(self):
