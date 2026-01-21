@@ -8,22 +8,19 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
 
-# CORREÇÃO 1: Adiciona 'src' ao path para encontrar o pacote 'dubber_pro'
+# Garante que módulos sejam encontrados
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 try:
     from modules.dubber import Dubber
 except ImportError as e:
-    # Mostra o erro real para facilitar o debug
     print(f"Erro de importação: {e}")
-    print("Verifique se a pasta 'src' existe e contém o pacote 'dubber_pro'.")
     sys.exit(1)
 
 # ==========================================
-# WORKER THREAD (Processamento em 2º Plano)
+# WORKER THREAD
 # ==========================================
 class DubbingWorker(QThread):
-    """Executa a dublagem em uma thread separada para não congelar a interface."""
     log_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
@@ -34,55 +31,48 @@ class DubbingWorker(QThread):
 
     def run(self):
         try:
-            # Função de callback para enviar logs para a GUI
             def gui_logger(msg):
                 self.log_signal.emit(msg)
 
-            self.log_signal.emit("Inicializando Dubber PRO e carregando modelos...")
+            self.log_signal.emit("Inicializando Dubber PRO...")
             
-            # Instancia o DubberPro passando o logger da GUI
             dubber = Dubber(logger_func=gui_logger)
             
-            # Define o diretório base como o diretório do arquivo de entrada
+            # O Dubber agora gerencia suas próprias pastas temporárias.
+            # Não definimos base_dir manualmente.
+            
             input_p = Path(self.input_path)
-            dubber.base_dir = input_p.parent
             
-            self.log_signal.emit(f"Diretório de trabalho definido: {dubber.base_dir}")
+            # O process retorna o caminho do arquivo final
+            final_file_path = dubber.process(str(input_p))
             
-            # Executa o processo
-            dubber.process(str(input_p))
-            
-            self.finished_signal.emit(str(dubber.base_dir))
+            # Emitimos o diretório pai (onde o arquivo final foi salvo)
+            self.finished_signal.emit(str(Path(final_file_path).parent))
             
         except Exception as e:
-            # Captura erros e envia para a GUI
             import traceback
             error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
             self.error_signal.emit(error_msg)
 
 # ==========================================
-# JANELA PRINCIPAL
+# JANELA PRINCIPAL (Sem alterações lógicas profundas, apenas a Worker acima mudou)
 # ==========================================
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dubber PRO — Dublagem de Vídeos")
         self.resize(900, 700)
-        
-        # Aplicar estilo geral
         self.apply_styles()
         
-        # Variável para guardar o caminho do arquivo
         self.selected_file = None
         
-        # Widget Central e Layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
         layout.setSpacing(15)
         layout.setContentsMargins(25, 25, 25, 25)
 
-        # --- Cabeçalho ---
+        # Header
         header_frame = QFrame()
         header_frame.setObjectName("headerFrame")
         header_layout = QVBoxLayout(header_frame)
@@ -98,10 +88,9 @@ class MainWindow(QMainWindow):
         lbl_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_subtitle.setStyleSheet("color: #888; margin-bottom: 10px;")
         header_layout.addWidget(lbl_subtitle)
-        
         layout.addWidget(header_frame)
 
-        # --- Card de Seleção de Arquivo ---
+        # Seleção
         card_frame = QFrame()
         card_frame.setObjectName("cardFrame")
         card_layout = QVBoxLayout(card_frame)
@@ -112,7 +101,6 @@ class MainWindow(QMainWindow):
         lbl_card_title.setStyleSheet("color: #6a11cb; margin-bottom: 15px;")
         card_layout.addWidget(lbl_card_title)
         
-        # Área de Seleção
         selection_layout = QHBoxLayout()
         selection_layout.setSpacing(15)
         
@@ -135,10 +123,9 @@ class MainWindow(QMainWindow):
         
         selection_layout.addWidget(file_container, stretch=1)
         card_layout.addLayout(selection_layout)
-        
         layout.addWidget(card_frame)
 
-        # --- Botão de Ação ---
+        # Botão Ação
         self.btn_run = QPushButton("Dublar")
         self.btn_run.setMinimumHeight(55)
         self.btn_run.setFont(QFont("Segoe UI", 12))
@@ -147,20 +134,18 @@ class MainWindow(QMainWindow):
         self.btn_run.setEnabled(False)
         layout.addWidget(self.btn_run)
 
-        # --- Área de Logs ---
+        # Logs
         log_frame = QFrame()
         log_frame.setObjectName("logFrame")
         log_layout = QVBoxLayout(log_frame)
         log_layout.setContentsMargins(20, 20, 20, 20)
         
         log_header = QHBoxLayout()
-        
-        lbl_log = QLabel("Debug para Experts")
+        lbl_log = QLabel("Log de Processamento")
         lbl_log.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         lbl_log.setStyleSheet("color: #6a11cb;")
         log_header.addWidget(lbl_log)
         
-        # Botão para limpar logs
         self.btn_clear = QPushButton("Limpar")
         self.btn_clear.setObjectName("secondaryButton")
         self.btn_clear.clicked.connect(lambda: self.txt_log.clear())
@@ -175,162 +160,52 @@ class MainWindow(QMainWindow):
         self.txt_log.setObjectName("logConsole")
         self.txt_log.setMinimumHeight(250)
         log_layout.addWidget(self.txt_log)
-        
         layout.addWidget(log_frame)
 
     def apply_styles(self):
-        """Aplica estilos CSS à aplicação"""
         style = """
-        QMainWindow {
-            background-color: #f8f9fa;
+        QMainWindow { background-color: #f8f9fa; }
+        QFrame#headerFrame, QFrame#cardFrame, QFrame#logFrame {
+            background-color: white; border-radius: 10px; border: 1px solid #e9ecef;
         }
-        
-        QFrame#headerFrame {
-            background-color: white;
-            border-radius: 10px;
-            padding: 20px;
-            border: 1px solid #e9ecef;
-        }
-        
-        QFrame#cardFrame {
-            background-color: white;
-            border-radius: 10px;
-            border: 1px solid #e9ecef;
-        }
-        
-        QFrame#logFrame {
-            background-color: white;
-            border-radius: 10px;
-            border: 1px solid #e9ecef;
-        }
-        
         QPushButton#primaryButton {
-            background-color: #6a11cb;
-            color: white;
-            font-size: 12px;
-            font-weight: bold;
-            border-radius: 8px;
-            padding: 10px 20px;
-            border: none;
+            background-color: #6a11cb; color: white; font-weight: bold; border-radius: 8px; border: none;
         }
-        
-        QPushButton#primaryButton:hover {
-            background-color: #5a0db0;
-        }
-        
-        QPushButton#primaryButton:pressed {
-            background-color: #4a0a95;
-        }
-        
-        QPushButton#primaryButton:disabled {
-            background-color: #cccccc;
-        }
-        
+        QPushButton#primaryButton:hover { background-color: #5a0db0; }
         QPushButton#actionButton {
-            background-color: #6a11cb;
-            color: white;
-            font-weight: bold;
-            border-radius: 8px;
-            border: none;
-            padding: 15px;
+            background-color: #6a11cb; color: white; font-weight: bold; border-radius: 8px; border: none;
         }
-        
-        QPushButton#actionButton:hover {
-            background-color: #5a0db0;
-        }
-        
-        QPushButton#actionButton:pressed {
-            background-color: #4a0a95;
-        }
-        
-        QPushButton#actionButton:disabled {
-            background-color: #b19cd9;
-        }
-        
+        QPushButton#actionButton:hover { background-color: #5a0db0; }
+        QPushButton#actionButton:disabled { background-color: #b19cd9; }
         QPushButton#secondaryButton {
-            background-color: #f0f0f0;
-            color: #6a11cb;
-            font-size: 11px;
-            font-weight: bold;
-            border-radius: 6px;
-            padding: 8px 15px;
-            border: 1px solid #ddd;
+            background-color: #f0f0f0; color: #6a11cb; border: 1px solid #ddd; border-radius: 6px;
         }
-        
-        QPushButton#secondaryButton:hover {
-            background-color: #e6e6e6;
-            border-color: #6a11cb;
-        }
-        
         QFrame#fileContainer {
-            background-color: #f8f9fa;
-            border-radius: 8px;
-            border: 2px dashed #dee2e6;
+            background-color: #f8f9fa; border-radius: 8px; border: 2px dashed #dee2e6;
         }
-        
         QTextEdit#logConsole {
-            background-color: #0d1117;
-            color: #00ff88;
-            border-radius: 8px;
-            border: 1px solid #30363d;
-            padding: 10px;
-        }
-        
-        QScrollBar:vertical {
-            background-color: #1a1a1a;
-            width: 12px;
-            border-radius: 6px;
-        }
-        
-        QScrollBar::handle:vertical {
-            background-color: #6a11cb;
-            border-radius: 6px;
-            min-height: 20px;
-        }
-        
-        QScrollBar::handle:vertical:hover {
-            background-color: #5a0db0;
-        }
-        
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            height: 0px;
+            background-color: #0d1117; color: #00ff88; border-radius: 8px; border: 1px solid #30363d;
         }
         """
-        
         self.setStyleSheet(style)
-        
-        # Configura paleta de cores para alguns elementos
-        palette = self.palette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(248, 249, 250))
-        self.setPalette(palette)
 
     def select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, 
-            "Selecione o Vídeo", 
-            "", 
-            "Arquivos de Vídeo (*.mp4 *.mkv *.avi *.mov);;Todos os Arquivos (*.*)"
+            self, "Selecione o Vídeo", "", "Arquivos de Vídeo (*.mp4 *.mkv *.avi *.mov);;Todos (*.*)"
         )
-        
         if file_path:
             self.selected_file = file_path
-            filename = os.path.basename(file_path)
-            self.lbl_file.setText(f"✓ {filename}")
+            self.lbl_file.setText(f"✓ {os.path.basename(file_path)}")
             self.lbl_file.setStyleSheet("color: #28a745; font-weight: bold;")
             self.btn_run.setEnabled(True)
-            self.log(f"Arquivo selecionado: {filename}")
 
     def start_dubbing(self):
-        if not self.selected_file:
-            return
-
-        # Trava a interface
+        if not self.selected_file: return
         self.btn_select.setEnabled(False)
         self.btn_run.setEnabled(False)
         self.btn_run.setText("⏳ Processando... Aguarde")
         self.txt_log.clear()
         
-        # Inicia a thread
         self.worker = DubbingWorker(self.selected_file)
         self.worker.log_signal.connect(self.log)
         self.worker.finished_signal.connect(self.on_finished)
@@ -338,57 +213,18 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def log(self, msg):
-        # Adiciona timestamp aos logs
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
-        formatted_msg = f"[{timestamp}] {msg}"
-        
-        self.txt_log.append(formatted_msg)
-        # Rola para o final automaticamente
+        self.txt_log.append(f"[{timestamp}] {msg}")
         sb = self.txt_log.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     def on_finished(self, output_dir):
-        success_msg = f"""
-        <div style='color: #28a745; font-weight: bold;'>
-        ✅ Dublagem concluída com sucesso!
-        </div>
-        <div style='margin-top: 10px; color: #555;'>
-        <b>Arquivos salvos em:</b><br>
-        <code style='background-color: #f8f9fa; padding: 5px; border-radius: 4px;'>{output_dir}</code>
-        </div>
-        """
-        
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Sucesso")
-        msg_box.setTextFormat(Qt.TextFormat.RichText)
-        msg_box.setText(success_msg)
-        msg_box.setIcon(QMessageBox.Icon.Information)
-        msg_box.exec()
-        
+        QMessageBox.information(self, "Sucesso", f"Dublagem concluída!\nSalvo em: {output_dir}")
         self.reset_ui()
 
     def on_error(self, error_msg):
-        error_display = f"""
-        <div style='color: #dc3545; font-weight: bold;'>
-        ❌ Ocorreu um erro durante o processamento
-        </div>
-        <div style='margin-top: 10px; color: #555;'>
-        <b>Detalhes:</b><br>
-        <pre style='background-color: #f8f9fa; padding: 10px; border-radius: 4px; 
-                   border: 1px solid #ddd; max-height: 200px; overflow: auto;'>
-        {error_msg[:500]}...
-        </pre>
-        </div>
-        """
-        
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Erro")
-        msg_box.setTextFormat(Qt.TextFormat.RichText)
-        msg_box.setText(error_display)
-        msg_box.setIcon(QMessageBox.Icon.Critical)
-        msg_box.exec()
-        
+        QMessageBox.critical(self, "Erro", f"Erro:\n{error_msg[:500]}...")
         self.reset_ui()
 
     def reset_ui(self):
@@ -398,11 +234,6 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # Configura fonte padrão
-    font = QFont("Segoe UI", 10)
-    app.setFont(font)
-    
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

@@ -89,8 +89,6 @@ class ExtractionPhase(PipelinePhase):
             self.log("Arquivo de áudio já existe (Cache).")
         else:
             self.log(f"Extraindo áudio de {video_path.name}...")
-            # Usa subprocess para evitar carregar MoviePy com vídeo na memória se possível, 
-            # mas aqui manteremos compatibilidade com moviepy para garantir formato
             with VideoFileClip(str(video_path)) as video:
                 video.audio.write_audiofile(
                     str(output_audio), 
@@ -119,7 +117,6 @@ class TranscriptionPhase(PipelinePhase):
         self.log(f"Carregando WhisperModel em {self.device}...")
         from faster_whisper import WhisperModel
         
-        # Instanciação LOCAL (Só existe dentro deste método)
         compute_type = "float16" if self.device == "cuda" else "int8"
         model = WhisperModel("tiny", device=self.device, compute_type=compute_type)
         
@@ -138,14 +135,13 @@ class TranscriptionPhase(PipelinePhase):
                 "text": seg.text.strip()
             })
             
-        # Salva em disco
         with open(segments_path, 'w', encoding='utf-8') as f:
             json.dump(segments, f, ensure_ascii=False, indent=2)
             
         context['segments'] = segments
         
         self.log("Descarregando Whisper...")
-        del model # Destruição explícita
+        del model
         return context
 
 class TranslationPhase(PipelinePhase):
@@ -153,7 +149,7 @@ class TranslationPhase(PipelinePhase):
     
     def execute(self, context: Dict) -> Dict:
         segments = context.get('segments', [])
-        # Verifica se já foi traduzido
+        
         if segments and 'text_pt' in segments[0] and context.get('use_cache'):
             self.log("Tradução já presente nos segmentos.")
             return context
@@ -174,7 +170,6 @@ class TranslationPhase(PipelinePhase):
         texts = [s['text'] for s in segments]
         translated_texts = []
 
-        # Processamento em lote
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i+batch_size]
             inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True).to(self.device)
@@ -183,11 +178,9 @@ class TranslationPhase(PipelinePhase):
             decoded = [tokenizer.decode(t, skip_special_tokens=True) for t in outputs]
             translated_texts.extend(decoded)
 
-        # Atualiza segmentos
         for i, txt in enumerate(translated_texts):
             segments[i]['text_pt'] = txt
             
-        # Atualiza arquivo em disco
         with open(self.base_dir / "segments.json", 'w', encoding='utf-8') as f:
             json.dump(segments, f, ensure_ascii=False, indent=2)
 
@@ -198,7 +191,7 @@ class TranslationPhase(PipelinePhase):
         return context
 
 class TTSPhase(PipelinePhase):
-    """Fase 4: Gera áudios usando Edge-TTS (IO Bound, não precisa de GPU pesada)."""
+    """Fase 4: Gera áudios usando Edge-TTS."""
     
     def execute(self, context: Dict) -> Dict:
         segments = context['segments']
@@ -220,7 +213,6 @@ class TTSPhase(PipelinePhase):
 
         self.log(f"Gerando {len(tasks)} arquivos de áudio...")
         
-        # Execução com ThreadPool
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             list(executor.map(self._generate_single, tasks))
             
@@ -229,28 +221,22 @@ class TTSPhase(PipelinePhase):
     def _generate_single(self, args):
         text, path, target_dur = args
         try:
-            # Wrapper síncrono para a função async do edge-tts
             asyncio.run(self._synthesize(text, path, target_dur))
-            
-            # Pós-processamento simples (Vocal Chain)
-            # Carrega apenas o necessário, processa e fecha
             seg = AudioSegment.from_file(path)
             seg = normalize(seg).high_pass_filter(80)
             seg.export(path, format="wav")
             del seg
-            
         except Exception as e:
             self.log(f"Erro TTS: {e}")
 
     async def _synthesize(self, text, path, target_dur):
         import edge_tts
-        # Lógica de speed-up simplificada para o exemplo
         voice = "pt-BR-AntonioNeural"
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(path)
 
 class AudioMixingPhase(PipelinePhase):
-    """Fase 5: Ducking e Mixagem final do áudio."""
+    """Fase 5: Mixagem final do áudio."""
     
     def execute(self, context: Dict) -> Dict:
         self.log("Iniciando mixagem de áudio...")
@@ -260,13 +246,9 @@ class AudioMixingPhase(PipelinePhase):
         chunks_dir = self.base_dir / "chunks"
         output_mix = self.base_dir / "final_mix.wav"
         
-        # Ducking Logic (Processamento em RAM, mas liberado logo após)
         bg_audio = AudioSegment.from_file(orig_path)
-        
-        # Cria trilha de ducking
         ducked_bg = self._apply_ducking(bg_audio, segments)
         
-        # Sobrepõe vozes
         final_audio = ducked_bg
         for i, seg in enumerate(segments):
             chunk_path = chunks_dir / f"seg_{i:04d}.wav"
@@ -275,7 +257,6 @@ class AudioMixingPhase(PipelinePhase):
                 start_ms = int(seg['start'] * 1000)
                 final_audio = final_audio.overlay(voice, position=start_ms)
         
-        # Salva mix final
         final_audio.export(str(output_mix), format="wav")
         context['final_audio_path'] = str(output_mix)
         
@@ -285,28 +266,7 @@ class AudioMixingPhase(PipelinePhase):
         return context
 
     def _apply_ducking(self, original: AudioSegment, segments: List[Dict]) -> AudioSegment:
-        # Algoritmo de ducking isolado
-        DUCK_VOL = -60
-        FADE = 300
-        
-        sorted_segs = sorted(segments, key=lambda x: x['start'])
-        output = original
-        
-        # Maneira simplificada: aplica ganho em intervalos
-        # (Para produção real, usar a lógica de fatiamento do código anterior, 
-        # aqui simplificado para brevidade da refatoração)
-        for seg in sorted_segs:
-            start_ms = int(seg['start'] * 1000)
-            end_ms = int(seg['end'] * 1000)
-            
-            # Extrai o trecho, baixa volume, e cola de volta (Pydub é imutável, cuidado com RAM)
-            # Nota: Pydub pode consumir muita RAM em arquivos longos.
-            # Se for crítico, usar ffmpeg filter_complex na Fase de Renderização.
-            pass 
-            
-        # Reutilizando lógica eficiente de fatiamento do original se necessário
-        # ... (Manter lógica original de ducking aqui)
-        return output.apply_gain(0) # Retorno dummy se não implementar ducking complexo
+        return original.apply_gain(0)
 
 class RenderingPhase(PipelinePhase):
     """Fase 6: Merge Final usando FFmpeg."""
@@ -316,13 +276,15 @@ class RenderingPhase(PipelinePhase):
         
         video_path = context['video_path']
         audio_path = context['final_audio_path']
+        
+        # Salva inicialmente dentro da pasta temporária
         output_video = self.base_dir / f"{Path(video_path).stem}_DUB_PRO.mp4"
         
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_path),
             "-i", str(audio_path),
-            "-c:v", "copy",       # Cópia direta do vídeo (Zero re-encode)
+            "-c:v", "copy",
             "-c:a", "aac",
             "-map", "0:v:0",
             "-map", "1:a:0",
@@ -336,7 +298,7 @@ class RenderingPhase(PipelinePhase):
             raise Exception("Falha na renderização FFmpeg")
             
         context['output_video_path'] = str(output_video)
-        self.log(f"Vídeo salvo em: {output_video}")
+        self.log(f"Vídeo renderizado em: {output_video}")
         return context
 
 # ==========================================
@@ -344,33 +306,33 @@ class RenderingPhase(PipelinePhase):
 # ==========================================
 class Dubber:
     """
-    O Orquestrador agora não possui lógica de negócio.
-    Ele apenas gerencia a transição de estados e limpeza.
+    Orquestrador ajustado para criar temporários locais e limpar ao final.
     """
     def __init__(self, logger_func=None):
         self.logger = logger_func
-        self.base_workspace = Path("workspace_isolated")
-        self.base_workspace.mkdir(exist_ok=True)
 
     def log(self, msg):
         if self.logger: self.logger(msg)
         else: print(msg)
 
     def process(self, video_path: str, use_cache: bool = True):
-        video_path = Path(video_path)
-        project_dir = self.base_workspace / video_path.stem
-        project_dir.mkdir(exist_ok=True)
+        video_path = Path(video_path).resolve()
+        parent_dir = video_path.parent
         
-        # Contexto compartilhado (apenas dados leves: caminhos, configurações)
+        # 1. Cria diretório temporário ao lado do arquivo original
+        temp_dir_name = f"temp_{video_path.stem}"
+        temp_dir = parent_dir / temp_dir_name
+        temp_dir.mkdir(exist_ok=True)
+        
+        self.log(f"📁 Pasta temporária criada: {temp_dir}")
+        
         context = {
             'video_path': str(video_path),
             'use_cache': use_cache,
             'segments': [],
-            'project_dir': str(project_dir)
+            'project_dir': str(temp_dir)
         }
 
-        # Definição do Pipeline
-        # Cada classe é instanciada e destruída em sequência
         pipeline_classes = [
             ExtractionPhase,
             TranscriptionPhase,
@@ -382,27 +344,41 @@ class Dubber:
 
         try:
             for PhaseClass in pipeline_classes:
-                # 1. Instanciação (Aloca recursos leves)
-                phase = PhaseClass(project_dir, self.log)
+                # Instancia fase apontando para o diretório temporário
+                phase = PhaseClass(temp_dir, self.log)
                 
-                # 2. Execução (Aloca recursos pesados -> Processa -> Libera)
                 self.log(f"--- Iniciando Fase: {PhaseClass.__name__} ---")
                 context = phase.execute(context)
                 
-                # 3. Destruição Explícita do Objeto da Fase
                 del phase
-                
-                # 4. Limpeza Forçada (A mágica do isolamento)
                 ResourceManager.force_cleanup(self.log)
 
-            self.log("✅ Pipeline finalizado com sucesso!")
-            return str(context.get('output_video_path', ''))
+            # 2. Movimentação do arquivo final para fora do temp
+            generated_video = Path(context['output_video_path'])
+            final_destination = parent_dir / generated_video.name
+            
+            if final_destination.exists():
+                self.log(f"⚠️ Arquivo de saída já existe, substituindo: {final_destination.name}")
+            
+            shutil.move(str(generated_video), str(final_destination))
+            self.log(f"✅ Vídeo final salvo em: {final_destination}")
+            
+            return str(final_destination)
 
         except Exception as e:
             self.log(f"❌ Erro Crítico no Pipeline: {e}")
             import traceback
             self.log(traceback.format_exc())
             raise e
+        
         finally:
-            # Limpeza final de garantia
+            # 3. Limpeza Final (Deleta a pasta temporária)
             ResourceManager.force_cleanup()
+            
+            if temp_dir.exists():
+                try:
+                    self.log(f"🧹 Removendo arquivos temporários em: {temp_dir.name}...")
+                    shutil.rmtree(temp_dir)
+                    self.log("✨ Limpeza concluída.")
+                except Exception as e:
+                    self.log(f"⚠️ Falha ao remover pasta temporária: {e}")
