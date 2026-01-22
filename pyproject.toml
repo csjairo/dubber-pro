@@ -1,48 +1,39 @@
 [project]
 name = "dubber-pro"
-version = "0.1.0"
-description = "Tradutor e Dublador Automático de Vídeos"
+version = "0.2.0"
+description = "Dubber PRO — Dublagem de Vídeos com IA."
 readme = "README.md"
-# IMPORTANTE: DirectML exige Python 3.10. CUDA roda bem no 3.10, 3.11 ou 3.12.
-requires-python = ">=3.10" 
+
+requires-python = ">=3.10,<3.15"
+
 dependencies = [
     "edge-tts>=7.2.7",
-    "faster-whisper>=1.2.1", # Ótimo para NVIDIA/CPU
+
+    # Whisper
+    "faster-whisper>=1.2.1",       # CUDA / CPU
+    "openai-whisper>=20231117",    # Fallback (CPU / DirectML)
+
+    # Áudio / Vídeo
     "librosa>=0.11.0",
     "moviepy>=2.2.1",
-    "openai-whisper>=20231117", # Fallback para DirectML
     "pydub>=0.25.1",
-    "pyinstaller>=6.18.0",
+    "soundfile>=0.13.1",
+
+    # NLP
+    "transformers>=4.40.0",
+    "sentencepiece>=0.2.1",
+    "sacremoses>=0.1.1",
+
+    # Torch (resolverá automaticamente a versão compatível com o Python)
+    "torch",
+    "torchaudio",
+    "torchvision",
+
+    # App
     "pyqt6>=6.10.2",
     "python-dotenv>=1.2.1",
-    "sacremoses>=0.1.1",
-    "sentencepiece>=0.2.1",
-    "soundfile>=0.13.1",
     "taskipy>=1.14.1",
-    "torch>=2.4.0",        # Versão moderna para CUDA
-    "torchaudio>=2.4.0",
-    "torchvision>=0.19.0",
-    "transformers>=4.40.0",
-]
 
-# Automação para não precisar decorar comandos complexos
-[tool.taskipy.tasks]
-start = "python main.py"
-# Setup Padrão (NVIDIA/CPU) - Usa o lockfile moderno
-setup-cuda = "uv sync"
-# Setup AMD/Intel (DirectML) - Cria um venv separado com versões antigas forçadas
-setup-dml = """
-uv venv .venv-dml --python 3.10 && \
-uv pip install -p .venv-dml \
-    edge-tts librosa moviepy pydub pyqt6 python-dotenv sacremoses sentencepiece soundfile taskipy \
-    transformers==4.30.0 \
-    openai-whisper \
-    torch-directml \
-    torch==1.13.1 \
-    torchvision==0.14.1 \
-    torchaudio==0.13.1
-"""
-# Comandos de execução específicos por ambiente
-run-cuda = "uv run main.py"
-run-dml = "source .venv-dml/bin/activate && python main.py" # Linux/Mac
-run-dml-win = ".venv-dml\\Scripts\\activate && python main.py" # Windows
+    # Build
+    "pyinstaller>=6.18.0",
+]
