@@ -31,7 +31,6 @@ class ExtractionPhase(PipelinePhase):
 
         if output_audio.exists() and context.get("use_cache"):
             self.log("Arquivo de áudio já existe (Cache).")
-            # Tenta recuperar a duração do arquivo existente para o contexto
             try:
                 context["video_duration"] = AudioSegment.from_file(output_audio).duration_seconds
             except:
@@ -53,7 +52,7 @@ class ExtractionPhase(PipelinePhase):
 
 
 class TranscriptionPhase(PipelinePhase):
-    """Fase 2: Transcreve áudio usando Faster-Whisper."""
+    """Fase 2: Transcreve áudio (Suporta Faster-Whisper e OpenAI-Whisper)."""
 
     def execute(self, context: Dict) -> Dict:
         segments_path = self.base_dir / "segments.json"
@@ -64,30 +63,71 @@ class TranscriptionPhase(PipelinePhase):
                 context["segments"] = json.load(f)
             return context
 
-        self.log(f"Carregando WhisperModel em {self.device}...")
-        from faster_whisper import WhisperModel
-
-        compute_type = "float16" if self.device == "cuda" else "int8"
-        model = WhisperModel(Config.WHISPER_MODEL, device=self.device, compute_type=Config.WHISPER_COMPUTE)
-
-        self.log("Iniciando transcrição...")
-        segments_gen, _ = model.transcribe(
-            context["original_audio_path"], language=Config.WHISPER_LANG, beam_size=Config.WHISPER_BEAM
-        )
-
         segments = []
-        for seg in segments_gen:
-            segments.append(
-                {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+
+        # ====================================================
+        # MODO 1: Faster Whisper (NVIDIA / CPU Otimizado)
+        # ====================================================
+        if self.backend == "faster-whisper":
+            self.log(f"Carregando Faster-Whisper em {self.device}...")
+            from faster_whisper import WhisperModel
+
+            # Ajusta precisão baseado no hardware
+            if self.device == "cuda":
+                compute_type = Config.WHISPER_COMPUTE # float16 geralmente
+            else:
+                compute_type = "int8" # CPU/Outros
+
+            model = WhisperModel(Config.WHISPER_MODEL, device=self.device, compute_type=compute_type)
+
+            self.log("Iniciando transcrição (Faster)...")
+            segments_gen, _ = model.transcribe(
+                context["original_audio_path"], 
+                language=Config.WHISPER_LANG, 
+                beam_size=Config.WHISPER_BEAM
             )
 
+            for seg in segments_gen:
+                segments.append(
+                    {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+                )
+            
+            del model
+
+        # ====================================================
+        # MODO 2: OpenAI Whisper (DirectML / Legacy / MPS)
+        # ====================================================
+        else:
+            self.log(f"Carregando OpenAI-Whisper (Legacy) em {self.device}...")
+            import whisper
+
+            # Nota: 'self.device' aqui pode ser um objeto torch.device (DirectML) ou string
+            # O whisper.load_model suporta ambos.
+            model = whisper.load_model(Config.WHISPER_MODEL, device=self.device)
+
+            self.log("Iniciando transcrição (Standard)...")
+            
+            # OpenAI Whisper retorna um dict completo, não um generator
+            result = model.transcribe(
+                context["original_audio_path"],
+                language=Config.WHISPER_LANG,
+                beam_size=Config.WHISPER_BEAM,
+                fp16=False # Forçar FP32 para evitar erros em DirectML/CPU antigo
+            )
+
+            for seg in result.get("segments", []):
+                segments.append(
+                    {"start": seg["start"], "end": seg["end"], "text": seg["text"].strip()}
+                )
+            
+            del model
+
+        # Salva resultados
         with open(segments_path, "w", encoding="utf-8") as f:
             json.dump(segments, f, ensure_ascii=False, indent=2)
 
         context["segments"] = segments
-
-        self.log("Descarregando Whisper...")
-        del model
+        self.log(f"Transcrição concluída ({len(segments)} segmentos).")
         return context
 
 
@@ -147,14 +187,20 @@ class TranslationPhase(PipelinePhase):
 
         model_name = Config.TRANS_MODEL
         tokenizer = MarianTokenizer.from_pretrained(model_name)
+        
+        # 'self.device' agora está limpo (sem backend info)
         model = MarianMTModel.from_pretrained(model_name).to(self.device)
 
-        if self.device in ["cuda", "mps"]:
+        # Otimização FP16 apenas para CUDA/MPS explícitos
+        if isinstance(self.device, str) and self.device in ["cuda", "mps"]:
             model = model.half()
 
         self.log(f"Traduzindo {len(segments)} segmentos...")
 
-        batch_size = Config.TRANS_BATCH if self.device != "cpu" else 8
+        # Se for CPU ou DirectML (objeto torch.device), usa batch menor se necessário
+        is_gpu = str(self.device) != "cpu"
+        batch_size = Config.TRANS_BATCH if is_gpu else 8
+        
         texts = [s["text"] for s in segments]
         translated_texts = []
         inputs = None
@@ -282,13 +328,6 @@ class AudioMixingPhase(PipelinePhase):
 
             start_ms = int(seg["start"] * 1000)
             
-            # 1. Correção de Drift: Se o cursor já passou do tempo de início deste segmento,
-            # precisamos "voltar no tempo" ou aceitar o overlap.
-            # Como é concatenação linear, se cursor_ms > start_ms, já estamos atrasados.
-            # Neste caso, o gap é 0, mas o atraso persiste.
-            # O ideal é impedir que isso aconteça no segmento ANTERIOR.
-            # Mas como estamos no loop, vamos calcular o limite para o áudio ATUAL.
-            
             gap = start_ms - cursor_ms
 
             if gap > 0:
@@ -307,19 +346,11 @@ class AudioMixingPhase(PipelinePhase):
                 if len(voice_chunk) > time_until_next and time_until_next > 100:
                     self.log(f"⚠️ Ajustando segmento {i} para evitar cascata: {len(voice_chunk)}ms -> {time_until_next}ms")
                     
-                    # Calcula razão de aceleração necessária
-                    # Adicionamos 1.05 para garantir que fique um pouco menor e não cole
                     ratio = len(voice_chunk) / time_until_next 
                     
-                    # Se precisar acelerar muito (ex: > 1.5x), pode ficar ruim, mas garante a sync.
-                    # O speedup do pydub é básico, altera um pouco o tom se for agressivo, 
-                    # mas é melhor que perder a sincronia do vídeo todo.
                     if ratio > 1.0:
-                        # chunk_factor é a velocidade. Pydub speedup funciona em chunks.
-                        # Tenta acelerar para caber
                         voice_chunk = speedup(voice_chunk, playback_speed=ratio * 1.05, chunk_size=50, crossfade=0)
                         
-                        # Se ainda for maior (pode acontecer por arredondamento), corta o final
                         if len(voice_chunk) > time_until_next:
                              voice_chunk = voice_chunk[:time_until_next]
 
@@ -332,7 +363,6 @@ class AudioMixingPhase(PipelinePhase):
         if final_gap > 0:
             timeline_parts.append(AudioSegment.silent(duration=final_gap, frame_rate=44100).set_channels(1))
 
-        # Consolidação e Mixagem (igual ao original)
         if timeline_parts:
             speech_track = sum(timeline_parts, AudioSegment.empty())
         else:
@@ -344,9 +374,6 @@ class AudioMixingPhase(PipelinePhase):
         import gc
         gc.collect()
 
-        # ... (Restante do código do FFmpeg Sidechain igual) ...
-        # Copiar a parte do subprocess.run do seu código original aqui
-        
         cmd = [
             "ffmpeg", "-y", "-i", str(orig_path), "-i", str(speech_track_path),
             "-filter_complex",
