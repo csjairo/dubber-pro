@@ -12,35 +12,27 @@ class ResourceManager:
     def get_best_device():
         """
         Retorna:
-            device_type (str): 'cuda', 'privateuseone' (DirectML), 'mps' ou 'cpu'
+            device_type (str): 'cuda', 'mps' ou 'cpu'
             backend_suggestion (str): 'faster-whisper' ou 'openai-whisper'
         """
         if ResourceManager._device_cache:
             return ResourceManager._device_cache
 
         device_type = "cpu"
-        backend = "faster-whisper" # Padrão mais rápido
+        backend = "faster-whisper" # Padrão mais rápido e eficiente para CPU
 
-        # 1. Tenta CUDA (NVIDIA)
+        # 1. Tenta CUDA (NVIDIA) - Prioridade Máxima
         if torch.cuda.is_available():
             device_type = "cuda"
             backend = "faster-whisper"
         
-        # 2. Tenta MPS (Mac)
+        # 2. Tenta MPS (Mac / Apple Silicon)
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             device_type = "mps"
-            backend = "openai-whisper" # faster-whisper tem suporte instável a MPS
+            backend = "openai-whisper" # faster-whisper ainda tem suporte instável a MPS
             
-        # 3. Tenta DirectML (AMD/Intel no Windows)
-        else:
-            try:
-                # DirectML é um pacote separado, só importamos se necessário
-                import torch_directml
-                if torch_directml.is_available():
-                    device_type = torch_directml.device() # Retorna 'privateuseone:0'
-                    backend = "openai-whisper" # faster-whisper NÃO roda em DirectML (exige CTranslate2)
-            except ImportError:
-                pass
+        # Nota: O suporte legado a DirectML foi removido para garantir estabilidade.
+        # Caso não haja GPU dedicada suportada (CUDA/MPS), o sistema usará a CPU.
 
         ResourceManager._device_cache = (device_type, backend)
         return ResourceManager._device_cache
@@ -53,10 +45,12 @@ class ResourceManager:
 
         gc.collect()
 
+        # Limpeza para CUDA
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
+        # Limpeza para MPS (Mac)
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             try:
                 torch.mps.empty_cache()
