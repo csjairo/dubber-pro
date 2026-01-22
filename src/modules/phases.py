@@ -6,6 +6,7 @@ import concurrent.futures
 from pathlib import Path
 from typing import List, Dict
 import re
+import edge_tts
 
 # Bibliotecas de Mídia
 from moviepy import VideoFileClip
@@ -223,10 +224,28 @@ class TTSPhase(PipelinePhase):
             self.log(f"Erro TTS: {e}")
 
     async def _synthesize(self, text, path, target_dur):
-        import edge_tts
         voice = "pt-BR-AntonioNeural"
+        
+        # 1. Tenta gerar na velocidade normal primeiro
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(path)
+        
+        # 2. Verifica a duração real do arquivo gerado
+        seg = AudioSegment.from_file(path)
+        actual_dur = len(seg) / 1000.0 # pydub usa ms
+        
+        # 3. Se ultrapassar o tempo alvo (com margem de erro, ex: 10%), regenera mais rápido
+        if actual_dur > target_dur:
+            # Calcula quanto precisa acelerar (ex: +30%)
+            ratio = (actual_dur / target_dur) - 1
+            # Limitamos a aceleração a +50% para não ficar ininteligível
+            percentage = min(int(ratio * 100) + 5, 50) 
+            
+            if percentage > 5: # Só regenera se a diferença for relevante
+                rate_str = f"+{percentage}%"
+                # self.logger(f"Ajustando velocidade para {rate_str} em: {text[:20]}...")
+                communicate = edge_tts.Communicate(text, voice, rate=rate_str)
+                await communicate.save(path)
 
 class AudioMixingPhase(PipelinePhase):
     """Fase 5: Mixagem do áudio traduzido sobre o fundo (ducking inteligente)."""
