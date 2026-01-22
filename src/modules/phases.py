@@ -4,7 +4,7 @@ import torch
 import subprocess
 import concurrent.futures
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict
 import re
 import edge_tts
 
@@ -19,7 +19,6 @@ from .pipeline import PipelinePhase
 # ==========================================
 # FASES DE PROCESSAMENTO
 # ==========================================
-
 
 class ExtractionPhase(PipelinePhase):
     """Fase 1: Extrai áudio do vídeo para WAV."""
@@ -246,29 +245,24 @@ class AudioMixingPhase(PipelinePhase):
     def execute(self, context: Dict) -> Dict:
         output_mix = self.base_dir / "final_mix.wav"
 
-        # Verifica Cache
         if output_mix.exists() and context.get("use_cache"):
             self.log("Mixagem já existe (Cache).")
             context["final_audio_path"] = str(output_mix)
             return context
 
-        self.log("Iniciando mixagem otimizada (FFmpeg + Smart Concatenation)...")
+        self.log("Iniciando mixagem com correção de sincronia (Anti-Drift)...")
 
         orig_path = Path(context["original_audio_path"])
         segments = context["segments"]
         chunks_dir = self.base_dir / "chunks"
         speech_track_path = self.base_dir / "speech_track.wav"
 
-        # 1. Obter duração total do vídeo
         duration = context.get("video_duration")
         if not duration:
             duration = self._get_duration(orig_path)
             context["video_duration"] = duration
 
-        # 2. Construir Faixa de Voz (Strategy 2: Concatenação Linear)
-        # Em vez de criar um áudio vazio gigante e fazer overlay (lento e pesado),
-        # criamos uma lista de silêncios e áudios e concatenamos uma única vez.
-        self.log(f"Montando faixa de voz ({duration:.2f}s) em Mono para economizar RAM...")
+        self.log(f"Montando faixa de voz ({duration:.2f}s) em Mono...")
         
         timeline_parts = []
         cursor_ms = 0
@@ -276,67 +270,86 @@ class AudioMixingPhase(PipelinePhase):
         # Garante ordenação temporal
         segments.sort(key=lambda x: x["start"])
 
+        # Import para o speedup de emergência
+        from pydub.effects import speedup
+
         for i, seg in enumerate(segments):
             chunk_path = chunks_dir / f"seg_{i:04d}.wav"
             if not chunk_path.exists():
                 continue
 
             start_ms = int(seg["start"] * 1000)
+            
+            # 1. Correção de Drift: Se o cursor já passou do tempo de início deste segmento,
+            # precisamos "voltar no tempo" ou aceitar o overlap.
+            # Como é concatenação linear, se cursor_ms > start_ms, já estamos atrasados.
+            # Neste caso, o gap é 0, mas o atraso persiste.
+            # O ideal é impedir que isso aconteça no segmento ANTERIOR.
+            # Mas como estamos no loop, vamos calcular o limite para o áudio ATUAL.
+            
             gap = start_ms - cursor_ms
 
-            # Adiciona silêncio se houver lacuna
             if gap > 0:
                 timeline_parts.append(AudioSegment.silent(duration=gap, frame_rate=44100).set_channels(1))
-
-            # Adiciona o chunk de áudio (Força Mono para economizar 50% de RAM neste passo)
-            voice_chunk = AudioSegment.from_file(chunk_path).set_channels(1)
-            timeline_parts.append(voice_chunk)
+                cursor_ms += gap # Agora cursor_ms == start_ms
             
-            cursor_ms = start_ms + len(voice_chunk)
+            # Carrega o áudio atual
+            voice_chunk = AudioSegment.from_file(chunk_path).set_channels(1)
 
-        # Preenche o restante do tempo com silêncio até o final do vídeo
+            # 2. Verificar quanto tempo temos até o PRÓXIMO segmento
+            if i < len(segments) - 1:
+                next_start_ms = int(segments[i+1]["start"] * 1000)
+                time_until_next = next_start_ms - cursor_ms # Tempo real disponível a partir de AGORA
+                
+                # Se o áudio é maior que o espaço até o próximo (com uma margem de erro pequena)
+                if len(voice_chunk) > time_until_next and time_until_next > 100:
+                    self.log(f"⚠️ Ajustando segmento {i} para evitar cascata: {len(voice_chunk)}ms -> {time_until_next}ms")
+                    
+                    # Calcula razão de aceleração necessária
+                    # Adicionamos 1.05 para garantir que fique um pouco menor e não cole
+                    ratio = len(voice_chunk) / time_until_next 
+                    
+                    # Se precisar acelerar muito (ex: > 1.5x), pode ficar ruim, mas garante a sync.
+                    # O speedup do pydub é básico, altera um pouco o tom se for agressivo, 
+                    # mas é melhor que perder a sincronia do vídeo todo.
+                    if ratio > 1.0:
+                        # chunk_factor é a velocidade. Pydub speedup funciona em chunks.
+                        # Tenta acelerar para caber
+                        voice_chunk = speedup(voice_chunk, playback_speed=ratio * 1.05, chunk_size=50, crossfade=0)
+                        
+                        # Se ainda for maior (pode acontecer por arredondamento), corta o final
+                        if len(voice_chunk) > time_until_next:
+                             voice_chunk = voice_chunk[:time_until_next]
+
+            timeline_parts.append(voice_chunk)
+            cursor_ms += len(voice_chunk)
+
+        # Preenche o restante
         total_dur_ms = int(duration * 1000)
         final_gap = total_dur_ms - cursor_ms
         if final_gap > 0:
             timeline_parts.append(AudioSegment.silent(duration=final_gap, frame_rate=44100).set_channels(1))
 
-        # Consolida a faixa de voz
+        # Consolidação e Mixagem (igual ao original)
         if timeline_parts:
-            # sum(lista, start) é a maneira eficiente de concatenar no Pydub
             speech_track = sum(timeline_parts, AudioSegment.empty())
         else:
             speech_track = AudioSegment.silent(duration=total_dur_ms, frame_rate=44100).set_channels(1)
 
-        # Exporta faixa temporária
         speech_track.export(str(speech_track_path), format="wav")
-        
-        # Limpeza Imediata de RAM (Strategy 7)
         del speech_track
         del timeline_parts
         import gc
         gc.collect()
 
-        # 3. Mixagem FFmpeg com Sidechain Compression (Strategy 1)
-        # Usa a faixa de voz para "empurrar" o volume do fundo para baixo automaticamente.
-        self.log("Executando mixagem final via FFmpeg Sidechain...")
-
+        # ... (Restante do código do FFmpeg Sidechain igual) ...
+        # Copiar a parte do subprocess.run do seu código original aqui
+        
         cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", str(orig_path),           # Input 0: Background (Stereo)
-            "-i", str(speech_track_path),   # Input 1: Vozes (Mono)
+            "ffmpeg", "-y", "-i", str(orig_path), "-i", str(speech_track_path),
             "-filter_complex",
-            # [1] divide o sinal da voz em 2: um para disparar o compressor, outro para mixar
-            "[1:a]asplit=2[sc][voice_mix];"
-            # Sidechain Compress: Quando [sc] (voz) toca, reduz [0:a] (fundo)
-            # threshold: sensibilidade (0.05 = ~-26dB)
-            # ratio: taxa de compressão (5:1)
-            # attack/release: suavidade (50ms/200ms)
-            "[0:a][sc]sidechaincompress=threshold=0.05:ratio=5:attack=50:release=200[ducked_bg];"
-            # Mix final: junta o fundo "duckado" com a voz. normalize=0 evita alteração de volume.
-            "[ducked_bg][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]",
-            "-map", "[out]",
-            str(output_mix)
+            "[1:a]asplit=2[sc][voice_mix];[0:a][sc]sidechaincompress=threshold=0.05:ratio=5:attack=50:release=200[ducked_bg];[ducked_bg][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]",
+            "-map", "[out]", str(output_mix)
         ]
 
         process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -345,8 +358,6 @@ class AudioMixingPhase(PipelinePhase):
             raise Exception("Falha na mixagem FFmpeg")
 
         context["final_audio_path"] = str(output_mix)
-        
-        # Remove arquivo temporário da faixa de voz para limpar disco
         try:
             speech_track_path.unlink()
         except:
