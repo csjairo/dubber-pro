@@ -11,6 +11,31 @@ from PyQt6.QtGui import QFont
 # Garante que módulos sejam encontrados
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
+def resource_path(relative_path):
+    """ Retorna o caminho absoluto, funcionando tanto em dev quanto no executável (PyInstaller) """
+    try:
+        # PyInstaller cria uma pasta temporária em _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+# --- CONFIGURAÇÃO AUTOMÁTICA DO FFMPEG ---
+# Configura o ambiente para usar o FFmpeg embutido na pasta 'bin'
+ffmpeg_path = resource_path(os.path.join("bin", "ffmpeg.exe"))
+ffprobe_path = resource_path(os.path.join("bin", "ffprobe.exe"))
+
+if os.path.exists(ffmpeg_path):
+    # Configura para bibliotecas que buscam no PATH (ex: pydub)
+    os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg_path)
+    
+    # Configura variáveis específicas para moviepy e imageio
+    os.environ["IMAGEIO_FFMPEG_EXE"] = ffmpeg_path
+    print(f"✅ FFmpeg configurado internamente: {ffmpeg_path}")
+else:
+    print("⚠️ FFmpeg não encontrado na pasta 'bin'. O sistema tentará usar o global.")
+
 try:
     from modules.dubber import Dubber
 except ImportError as e:
@@ -157,8 +182,8 @@ class MainWindow(QMainWindow):
 
     def load_styles(self):
         """Lê o arquivo .qss da pasta styles e aplica à janela."""
-        # Usa caminho relativo ao arquivo main.py para achar a pasta styles
-        style_path = Path(__file__).parent / "styles" / "main.qss"
+        # Caminho adaptado para funcionar no executável
+        style_path = Path(resource_path(os.path.join("styles", "main.qss")))
         
         try:
             if style_path.exists():
