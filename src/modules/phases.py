@@ -5,6 +5,7 @@ import subprocess
 import concurrent.futures
 from pathlib import Path
 from typing import List, Dict
+import re
 
 # Bibliotecas de Mídia
 from moviepy import VideoFileClip
@@ -84,13 +85,60 @@ class TranscriptionPhase(PipelinePhase):
         del model
         return context
 
+class PostProcessingPhase(PipelinePhase):
+    """Fase Intermediária: Limpeza e correção dos segmentos transcritos."""
+
+    def execute(self, context: Dict) -> Dict:
+        segments = context.get('segments', [])
+        
+        if not segments:
+            self.log("Nenhum segmento para processar.")
+            return context
+
+        self.log(f"Processando {len(segments)} segmentos de texto...")
+        
+        cleaned_segments = []
+        for seg in segments:
+            original_text = seg['text']
+            
+            # 1. Remover alucinações comuns do Whisper (ex: Legendas por...)
+            # Adicione aqui padrões Regex específicos que você tem notado
+            new_text = re.sub(r'\[.*?\]|\(.*?\)', '', original_text) # Remove [Som] ou (Risos)
+            
+            # 2. Remover espaços extras
+            new_text = new_text.strip()
+            
+            # 3. Filtrar segmentos vazios ou muito curtos (ruído)
+            if len(new_text) < 2:
+                continue
+
+            # 4. (Opcional) Correções manuais ou substituições
+            # new_text = new_text.replace("TermoErrado", "TermoCerto")
+
+            # Atualiza o texto no segmento
+            seg['text'] = new_text
+            cleaned_segments.append(seg)
+        
+        # Opcional: Salvar o JSON intermediário para depuração
+        processed_path = self.base_dir / "segments_cleaned.json"
+        with open(processed_path, 'w', encoding='utf-8') as f:
+            json.dump(cleaned_segments, f, ensure_ascii=False, indent=2)
+
+        context['segments'] = cleaned_segments
+        return context
+
 class TranslationPhase(PipelinePhase):
     """Fase 3: Traduz texto usando MarianMT (HuggingFace)."""
     
     def execute(self, context: Dict) -> Dict:
         segments = context.get('segments', [])
         
-        if segments and 'text_pt' in segments[0] and context.get('use_cache'):
+        # CORREÇÃO: Se não há segmentos, não faz nada
+        if not segments:
+            self.log("Nenhum segmento detectado para tradução.")
+            return context
+        
+        if 'text_pt' in segments[0] and context.get('use_cache'):
             self.log("Tradução já presente nos segmentos.")
             return context
 
@@ -110,6 +158,9 @@ class TranslationPhase(PipelinePhase):
         texts = [s['text'] for s in segments]
         translated_texts = []
 
+        # Inicializa inputs como None para evitar UnboundLocalError caso algo falhe
+        inputs = None 
+
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i+batch_size]
             inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True).to(self.device)
@@ -127,7 +178,11 @@ class TranslationPhase(PipelinePhase):
         self.log("Descarregando MarianMT...")
         del model
         del tokenizer
-        del inputs
+        
+        # CORREÇÃO: Só deleta inputs se ele foi definido
+        if inputs is not None:
+            del inputs
+            
         return context
 
 class TTSPhase(PipelinePhase):
@@ -174,7 +229,7 @@ class TTSPhase(PipelinePhase):
         await communicate.save(path)
 
 class AudioMixingPhase(PipelinePhase):
-    """Fase 5: Mixagem do áudio traduzido sobre o fundo (ducking)."""
+    """Fase 5: Mixagem do áudio traduzido sobre o fundo (ducking inteligente)."""
     
     def execute(self, context: Dict) -> Dict:
         self.log("Iniciando mixagem de áudio...")
@@ -184,28 +239,103 @@ class AudioMixingPhase(PipelinePhase):
         chunks_dir = self.base_dir / "chunks"
         output_mix = self.base_dir / "final_mix.wav"
         
+        # 1. Carregar áudio original
         bg_audio = AudioSegment.from_file(orig_path)
-        ducked_bg = self._apply_ducking(bg_audio, segments)
+        
+        # 2. Criar a base com o volume reduzido nos momentos certos (Ducking)
+        # O valor -15 define o quanto o volume baixa (em decibéis). Ajuste se necessário.
+        ducked_bg = self._apply_ducking(bg_audio, segments, gain_reduction=-15)
         
         final_audio = ducked_bg
+        
+        # 3. Sobrepor as vozes traduzidas
         for i, seg in enumerate(segments):
             chunk_path = chunks_dir / f"seg_{i:04d}.wav"
             if chunk_path.exists():
                 voice = AudioSegment.from_file(chunk_path)
+                
+                # Sincroniza a entrada da voz com o tempo original
                 start_ms = int(seg['start'] * 1000)
                 final_audio = final_audio.overlay(voice, position=start_ms)
         
+        # Exportar
         final_audio.export(str(output_mix), format="wav")
         context['final_audio_path'] = str(output_mix)
         
+        # Limpeza
         del bg_audio
         del final_audio
         del ducked_bg
+        
         return context
 
-    def _apply_ducking(self, original: AudioSegment, segments: List[Dict]) -> AudioSegment:
-        # Implementação simplificada de ducking (silenciar original)
-        return original.apply_gain(0)
+    def _apply_ducking(self, original: AudioSegment, segments: List[Dict], gain_reduction: int = -15) -> AudioSegment:
+        """
+        Reconstroi o áudio original baixando o volume apenas nos intervalos de fala.
+        Agrupa falas próximas para evitar oscilação rápida de volume.
+        """
+        if not segments:
+            return original
+
+        # 1. Converter segmentos para milissegundos e ordenar
+        intervals = []
+        for seg in segments:
+            start_ms = int(seg['start'] * 1000)
+            end_ms = int(seg['end'] * 1000)
+            intervals.append([start_ms, end_ms])
+        
+        intervals.sort(key=lambda x: x[0])
+
+        # 2. Fundir intervalos muito próximos (Gap < 500ms) para evitar "efeito sanfona"
+        merged = []
+        gap_threshold = 500  # ms
+        
+        for start, end in intervals:
+            if not merged:
+                merged.append([start, end])
+                continue
+            
+            last_start, last_end = merged[-1]
+            
+            # Se o começo do atual é próximo do fim do anterior, funde
+            if start <= last_end + gap_threshold:
+                merged[-1][1] = max(last_end, end)
+            else:
+                merged.append([start, end])
+
+        # 3. Construir o novo áudio processado
+        final_audio = AudioSegment.empty()
+        last_pos = 0
+        
+        # Pequeno fade para suavizar a entrada/saída do volume (evita "clicks")
+        fade_ms = 200 
+
+        for start, end in merged:
+            # Garante limites seguros
+            start = max(0, start)
+            end = min(len(original), end)
+            
+            # Parte A: Volume Normal (do último ponto até o início da fala)
+            if start > last_pos:
+                normal_part = original[last_pos:start]
+                final_audio += normal_part
+            
+            # Parte B: Volume Baixo (durante a fala)
+            # Aplica o ganho negativo
+            quiet_part = original[start:end].apply_gain(gain_reduction)
+            
+            # Opcional: Aplicar fade in/out na parte baixa para transição suave
+            # quiet_part = quiet_part.fade_in(fade_ms).fade_out(fade_ms)
+            
+            final_audio += quiet_part
+            
+            last_pos = end
+            
+        # Parte C: Volume Normal (restante do áudio)
+        if last_pos < len(original):
+            final_audio += original[last_pos:]
+            
+        return final_audio
 
 class RenderingPhase(PipelinePhase):
     """Fase 6: Combina vídeo original com novo áudio usando FFmpeg."""

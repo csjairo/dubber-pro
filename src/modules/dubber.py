@@ -9,6 +9,7 @@ from .pipeline import PipelinePhase
 from .phases import (
     ExtractionPhase,
     TranscriptionPhase,
+    PostProcessingPhase,
     TranslationPhase,
     TTSPhase,
     AudioMixingPhase,
@@ -49,6 +50,7 @@ class Dubber:
         pipeline_classes: List[Type[PipelinePhase]] = [
             ExtractionPhase,
             TranscriptionPhase,
+            PostProcessingPhase,
             TranslationPhase,
             TTSPhase,
             AudioMixingPhase,
