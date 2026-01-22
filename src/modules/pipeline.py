@@ -3,9 +3,10 @@ from pathlib import Path
 from typing import Dict, Callable
 from .resources import ResourceManager
 
+
 class PipelinePhase(ABC):
     """Classe abstrata que define o contrato de uma fase isolada."""
-    
+
     def __init__(self, base_dir: Path, logger: Callable[[str], None]):
         self.base_dir = base_dir
         self.logger = logger

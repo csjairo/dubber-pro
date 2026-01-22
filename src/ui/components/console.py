@@ -1,29 +1,37 @@
-from PyQt6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
+from PyQt6.QtWidgets import (
+    QFrame,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTextEdit,
+)
 from PyQt6.QtGui import QFont
 from datetime import datetime
+
 
 class ConsoleComponent(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("logFrame")
-        
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        
+
         header = QHBoxLayout()
         lbl_log = QLabel("Log de Processamento")
         lbl_log.setObjectName("lblLogHeader")
         lbl_log.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         header.addWidget(lbl_log)
-        
+
         self.btn_clear = QPushButton("Limpar")
         self.btn_clear.setObjectName("secondaryButton")
         self.btn_clear.clicked.connect(self.clear_log)
         self.btn_clear.setMaximumWidth(100)
         header.addWidget(self.btn_clear)
-        
+
         layout.addLayout(header)
-        
+
         self.txt_log = QTextEdit()
         self.txt_log.setReadOnly(True)
         self.txt_log.setFont(QFont("Consolas", 10))

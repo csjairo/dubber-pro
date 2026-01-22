@@ -3,6 +3,7 @@ from pathlib import Path
 import traceback
 from src.modules.dubber import Dubber
 
+
 class DubbingWorker(QThread):
     log_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(str)
@@ -14,7 +15,9 @@ class DubbingWorker(QThread):
 
     def run(self):
         if not Dubber:
-            self.error_signal.emit("❌ Erro: Módulo 'Dubber' não encontrado. Verifique o src.")
+            self.error_signal.emit(
+                "❌ Erro: Módulo 'Dubber' não encontrado. Verifique o src."
+            )
             return
 
         try:
@@ -23,16 +26,16 @@ class DubbingWorker(QThread):
                 self.log_signal.emit(msg)
 
             self.log_signal.emit("🚀 Inicializando pipeline de dublagem...")
-            
+
             dubber = Dubber(logger_func=gui_logger)
             input_p = Path(self.input_path)
-            
+
             # Executa o processamento pesado
             final_file_path = dubber.process(str(input_p))
-            
+
             # Retorna apenas a pasta onde o arquivo foi salvo
             self.finished_signal.emit(str(Path(final_file_path).parent))
-            
+
         except Exception as e:
             # Captura traceback completo para debug
             error_msg = f"{str(e)}\n\n{traceback.format_exc()}"

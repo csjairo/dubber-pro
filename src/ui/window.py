@@ -1,7 +1,16 @@
 import os
 from pathlib import Path
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QPushButton, 
-                             QMessageBox, QToolBar, QToolButton, QMenu)
+
+# Correção F401: QToolBar removido da importação
+from PyQt6.QtWidgets import (
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QPushButton,
+    QMessageBox,
+    QToolButton,
+    QMenu,
+)
 from PyQt6.QtGui import QFont, QAction
 
 # Importações relativas dentro do pacote UI
@@ -11,18 +20,19 @@ from .components.console import ConsoleComponent
 from .worker import DubbingWorker
 from .utils import resource_path
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dubber PRO — Dublagem de Vídeos")
         self.resize(900, 700)
-        
+
         self.load_styles()
         self.selected_file = None
-        
+
         # --- Configuração da Toolbar ---
         self.setup_toolbar()
-        
+
         # --- Configuração do Layout Principal ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -53,10 +63,10 @@ class MainWindow(QMainWindow):
         self.layout.addWidget(self.console)
 
     def setup_toolbar(self):
-        """ Configura a toolbar com menu dropdown """
+        """Configura a toolbar com menu dropdown"""
         toolbar = self.addToolBar("MainToolbar")
         toolbar.setMovable(False)
-        
+
         # CSS Inline: Toolbar e Menu Dropdown
         toolbar.setStyleSheet("""
             QToolBar {
@@ -106,20 +116,20 @@ class MainWindow(QMainWindow):
         btn_options.setText("Opções")
         # Define que ao clicar, o menu abre imediatamente (InstantPopup)
         btn_options.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        
+
         # Cria o menu container
         menu_options = QMenu(btn_options)
-        
+
         # Item: Configurações
         act_settings = QAction("Configurações", self)
         act_settings.triggered.connect(self.open_settings)
         menu_options.addAction(act_settings)
-        
+
         # Item: Avançado
         act_advanced = QAction("Avançado", self)
         act_advanced.triggered.connect(self.open_advanced)
         menu_options.addAction(act_advanced)
-        
+
         # Vincula o menu ao botão e adiciona à toolbar
         btn_options.setMenu(menu_options)
         toolbar.addWidget(btn_options)
@@ -169,13 +179,15 @@ class MainWindow(QMainWindow):
         self.btn_run.setEnabled(True)
 
     def start_dubbing(self):
-        if not self.selected_file: return
-        
+        # Correção E701: Declaração em múltiplas linhas
+        if not self.selected_file:
+            return
+
         self.selection_card.set_enabled(False)
         self.btn_run.setEnabled(False)
         self.btn_run.setText("⏳ Processando... Aguarde")
         self.console.clear_log()
-        
+
         self.worker = DubbingWorker(self.selected_file)
         self.worker.log_signal.connect(self.console.append_log)
         self.worker.finished_signal.connect(self.on_finished)
@@ -183,7 +195,9 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_finished(self, output_dir):
-        QMessageBox.information(self, "Sucesso", f"Dublagem concluída!\nSalvo em: {output_dir}")
+        QMessageBox.information(
+            self, "Sucesso", f"Dublagem concluída!\nSalvo em: {output_dir}"
+        )
         self.reset_ui()
 
     def on_error(self, error_msg):
