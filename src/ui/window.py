@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
-from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QPushButton, QMessageBox
-from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QPushButton, 
+                             QMessageBox, QToolBar, QToolButton, QMenu)
+from PyQt6.QtGui import QFont, QAction
 
 # Importações relativas dentro do pacote UI
 from .components.header import HeaderComponent
@@ -19,6 +20,9 @@ class MainWindow(QMainWindow):
         self.load_styles()
         self.selected_file = None
         
+        # --- Configuração da Toolbar ---
+        self.setup_toolbar()
+        
         # --- Configuração do Layout Principal ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -32,11 +36,10 @@ class MainWindow(QMainWindow):
 
         # 2. Seleção
         self.selection_card = SelectionComponent()
-        # Conecta o sinal do componente ao método da janela
         self.selection_card.fileSelected.connect(self.on_file_selected)
         self.layout.addWidget(self.selection_card)
 
-        # 3. Botão de Ação (Ainda controlado pela janela pois orquestra tudo)
+        # 3. Botão de Ação
         self.btn_run = QPushButton("Dublar")
         self.btn_run.setMinimumHeight(55)
         self.btn_run.setFont(QFont("Segoe UI", 12))
@@ -49,12 +52,112 @@ class MainWindow(QMainWindow):
         self.console = ConsoleComponent()
         self.layout.addWidget(self.console)
 
+    def setup_toolbar(self):
+        """ Configura a toolbar com menu dropdown """
+        toolbar = self.addToolBar("MainToolbar")
+        toolbar.setMovable(False)
+        
+        # CSS Inline: Toolbar e Menu Dropdown
+        toolbar.setStyleSheet("""
+            QToolBar {
+                background-color: white;
+                border-bottom: 1px solid #d0d0d0;
+                spacing: 10px;
+                padding: 5px;
+            }
+            /* Botões da Toolbar */
+            QToolButton {
+                color: black;
+                font-family: "Segoe UI";
+                font-size: 9pt;
+                font-weight: 500;
+                background-color: transparent;
+                border: none;
+                padding: 4px 10px;
+                margin: 0px;
+            }
+            QToolButton:hover {
+                background-color: #f0f0f0;
+                border-radius: 3px;
+            }
+            QToolButton:pressed {
+                background-color: #e0e0e0;
+            }
+            /* Menu Dropdown (Opções) */
+            QMenu {
+                background-color: white;
+                border: 1px solid #d0d0d0;
+                font-family: "Segoe UI";
+                font-size: 10pt;
+                padding: 5px 0px;
+            }
+            QMenu::item {
+                padding: 6px 25px; /* Espaçamento interno dos itens */
+                color: black;
+            }
+            QMenu::item:selected {
+                background-color: #f0f0f0; /* Cor ao passar o mouse no item */
+            }
+        """)
+
+        # 2. Menu "Opções" (Dropdown)
+        # Cria um botão especial para a toolbar
+        btn_options = QToolButton(self)
+        btn_options.setText("Opções")
+        # Define que ao clicar, o menu abre imediatamente (InstantPopup)
+        btn_options.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        
+        # Cria o menu container
+        menu_options = QMenu(btn_options)
+        
+        # Item: Configurações
+        act_settings = QAction("Configurações", self)
+        act_settings.triggered.connect(self.open_settings)
+        menu_options.addAction(act_settings)
+        
+        # Item: Avançado
+        act_advanced = QAction("Avançado", self)
+        act_advanced.triggered.connect(self.open_advanced)
+        menu_options.addAction(act_advanced)
+        
+        # Vincula o menu ao botão e adiciona à toolbar
+        btn_options.setMenu(menu_options)
+        toolbar.addWidget(btn_options)
+
+        # 3. Help
+        act_help = QAction("Help", self)
+        act_help.triggered.connect(self.open_help)
+        toolbar.addAction(act_help)
+
+        # 4. Sobre
+        act_about = QAction("Sobre", self)
+        act_about.triggered.connect(self.show_about)
+        toolbar.addAction(act_about)
+
+        # 1. Sair
+        act_exit = QAction("Sair", self)
+        act_exit.triggered.connect(self.close)
+        toolbar.addAction(act_exit)
+
+    # --- Actions Slots (Placeholders) ---
+    def open_settings(self):
+        QMessageBox.information(self, "Configurações", "Janela de configurações.")
+
+    def open_advanced(self):
+        QMessageBox.information(self, "Avançado", "Opções avançadas.")
+
+    def open_help(self):
+        QMessageBox.information(self, "Help", "Ajuda do sistema.")
+
+    def show_about(self):
+        QMessageBox.about(self, "Sobre", "Dubber PRO v0.1.0")
+
     def load_styles(self):
-        """ Carrega o arquivo CSS externo """
         style_path = Path(resource_path(os.path.join("styles", "main.qss")))
         try:
             if style_path.exists():
                 with open(style_path, "r", encoding="utf-8") as f:
+                    # Carrega estilos globais, mas o CSS inline da Toolbar tem prioridade
                     self.setStyleSheet(f.read())
             else:
                 print(f"⚠️ Estilo não encontrado: {style_path}")
@@ -62,20 +165,17 @@ class MainWindow(QMainWindow):
             print(f"❌ Erro ao carregar estilos: {e}")
 
     def on_file_selected(self, file_path):
-        """ Callback disparado quando o componente de seleção escolhe um arquivo """
         self.selected_file = file_path
         self.btn_run.setEnabled(True)
 
     def start_dubbing(self):
         if not self.selected_file: return
         
-        # Atualiza Estado da UI
         self.selection_card.set_enabled(False)
         self.btn_run.setEnabled(False)
         self.btn_run.setText("⏳ Processando... Aguarde")
         self.console.clear_log()
         
-        # Inicia Worker
         self.worker = DubbingWorker(self.selected_file)
         self.worker.log_signal.connect(self.console.append_log)
         self.worker.finished_signal.connect(self.on_finished)
