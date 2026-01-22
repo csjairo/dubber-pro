@@ -30,6 +30,11 @@ class ExtractionPhase(PipelinePhase):
 
         if output_audio.exists() and context.get("use_cache"):
             self.log("Arquivo de áudio já existe (Cache).")
+            # Tenta recuperar a duração do arquivo existente para o contexto
+            try:
+                context["video_duration"] = AudioSegment.from_file(output_audio).duration_seconds
+            except:
+                pass
         else:
             self.log(f"Extraindo áudio de {video_path.name}...")
             with VideoFileClip(str(video_path)) as video:
@@ -62,7 +67,7 @@ class TranscriptionPhase(PipelinePhase):
         from faster_whisper import WhisperModel
 
         compute_type = "float16" if self.device == "cuda" else "int8"
-        model = WhisperModel("tiny", device=self.device, compute_type=compute_type)
+        model = WhisperModel("medium", device=self.device, compute_type=compute_type)
 
         self.log("Iniciando transcrição...")
         segments_gen, _ = model.transcribe(
@@ -101,27 +106,19 @@ class PostProcessingPhase(PipelinePhase):
         for seg in segments:
             original_text = seg["text"]
 
-            # 1. Remover alucinações comuns do Whisper (ex: Legendas por...)
-            # Adicione aqui padrões Regex específicos que você tem notado
-            new_text = re.sub(
-                r"\[.*?\]|\(.*?\)", "", original_text
-            )  # Remove [Som] ou (Risos)
+            # 1. Remover alucinações comuns do Whisper
+            new_text = re.sub(r"\[.*?\]|\(.*?\)", "", original_text)
 
             # 2. Remover espaços extras
             new_text = new_text.strip()
 
-            # 3. Filtrar segmentos vazios ou muito curtos (ruído)
+            # 3. Filtrar segmentos vazios ou muito curtos
             if len(new_text) < 2:
                 continue
 
-            # 4. (Opcional) Correções manuais ou substituições
-            # new_text = new_text.replace("TermoErrado", "TermoCerto")
-
-            # Atualiza o texto no segmento
             seg["text"] = new_text
             cleaned_segments.append(seg)
 
-        # Opcional: Salvar o JSON intermediário para depuração
         processed_path = self.base_dir / "segments_cleaned.json"
         with open(processed_path, "w", encoding="utf-8") as f:
             json.dump(cleaned_segments, f, ensure_ascii=False, indent=2)
@@ -136,7 +133,6 @@ class TranslationPhase(PipelinePhase):
     def execute(self, context: Dict) -> Dict:
         segments = context.get("segments", [])
 
-        # CORREÇÃO: Se não há segmentos, não faz nada
         if not segments:
             self.log("Nenhum segmento detectado para tradução.")
             return context
@@ -160,8 +156,6 @@ class TranslationPhase(PipelinePhase):
         batch_size = 32 if self.device != "cpu" else 8
         texts = [s["text"] for s in segments]
         translated_texts = []
-
-        # Inicializa inputs como None para evitar UnboundLocalError caso algo falhe
         inputs = None
 
         for i in range(0, len(texts), batch_size):
@@ -183,8 +177,6 @@ class TranslationPhase(PipelinePhase):
         self.log("Descarregando MarianMT...")
         del model
         del tokenizer
-
-        # CORREÇÃO: Só deleta inputs se ele foi definido
         if inputs is not None:
             del inputs
 
@@ -230,138 +222,153 @@ class TTSPhase(PipelinePhase):
 
     async def _synthesize(self, text, path, target_dur):
         voice = "pt-BR-AntonioNeural"
-
-        # 1. Tenta gerar na velocidade normal primeiro
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(path)
 
-        # 2. Verifica a duração real do arquivo gerado
         seg = AudioSegment.from_file(path)
-        actual_dur = len(seg) / 1000.0  # pydub usa ms
+        actual_dur = len(seg) / 1000.0
 
-        # 3. Se ultrapassar o tempo alvo (com margem de erro, ex: 10%), regenera mais rápido
         if actual_dur > target_dur:
-            # Calcula quanto precisa acelerar (ex: +30%)
             ratio = (actual_dur / target_dur) - 1
-            # Limitamos a aceleração a +50% para não ficar ininteligível
             percentage = min(int(ratio * 100) + 5, 50)
-
-            if percentage > 5:  # Só regenera se a diferença for relevante
+            if percentage > 5:
                 rate_str = f"+{percentage}%"
-                # self.logger(f"Ajustando velocidade para {rate_str} em: {text[:20]}...")
                 communicate = edge_tts.Communicate(text, voice, rate=rate_str)
                 await communicate.save(path)
 
 
 class AudioMixingPhase(PipelinePhase):
-    """Fase 5: Mixagem do áudio traduzido sobre o fundo (ducking inteligente)."""
+    """
+    Fase 5: Mixagem Otimizada com FFmpeg (Sidechain Ducking).
+    Reduz drasticamente o uso de RAM e processa o ducking de forma automática.
+    """
 
     def execute(self, context: Dict) -> Dict:
-        self.log("Iniciando mixagem de áudio...")
-
-        orig_path = context["original_audio_path"]
-        segments = context["segments"]
-        chunks_dir = self.base_dir / "chunks"
         output_mix = self.base_dir / "final_mix.wav"
 
-        # 1. Carregar áudio original
-        bg_audio = AudioSegment.from_file(orig_path)
+        # Verifica Cache
+        if output_mix.exists() and context.get("use_cache"):
+            self.log("Mixagem já existe (Cache).")
+            context["final_audio_path"] = str(output_mix)
+            return context
 
-        # 2. Criar a base com o volume reduzido nos momentos certos (Ducking)
-        # O valor -15 define o quanto o volume baixa (em decibéis). Ajuste se necessário.
-        ducked_bg = self._apply_ducking(bg_audio, segments, gain_reduction=-15)
+        self.log("Iniciando mixagem otimizada (FFmpeg + Smart Concatenation)...")
 
-        final_audio = ducked_bg
+        orig_path = Path(context["original_audio_path"])
+        segments = context["segments"]
+        chunks_dir = self.base_dir / "chunks"
+        speech_track_path = self.base_dir / "speech_track.wav"
 
-        # 3. Sobrepor as vozes traduzidas
+        # 1. Obter duração total do vídeo
+        duration = context.get("video_duration")
+        if not duration:
+            duration = self._get_duration(orig_path)
+            context["video_duration"] = duration
+
+        # 2. Construir Faixa de Voz (Strategy 2: Concatenação Linear)
+        # Em vez de criar um áudio vazio gigante e fazer overlay (lento e pesado),
+        # criamos uma lista de silêncios e áudios e concatenamos uma única vez.
+        self.log(f"Montando faixa de voz ({duration:.2f}s) em Mono para economizar RAM...")
+        
+        timeline_parts = []
+        cursor_ms = 0
+        
+        # Garante ordenação temporal
+        segments.sort(key=lambda x: x["start"])
+
         for i, seg in enumerate(segments):
             chunk_path = chunks_dir / f"seg_{i:04d}.wav"
-            if chunk_path.exists():
-                voice = AudioSegment.from_file(chunk_path)
+            if not chunk_path.exists():
+                continue
 
-                # Sincroniza a entrada da voz com o tempo original
-                start_ms = int(seg["start"] * 1000)
-                final_audio = final_audio.overlay(voice, position=start_ms)
+            start_ms = int(seg["start"] * 1000)
+            gap = start_ms - cursor_ms
 
-        # Exportar
-        final_audio.export(str(output_mix), format="wav")
+            # Adiciona silêncio se houver lacuna
+            if gap > 0:
+                timeline_parts.append(AudioSegment.silent(duration=gap, frame_rate=44100).set_channels(1))
+
+            # Adiciona o chunk de áudio (Força Mono para economizar 50% de RAM neste passo)
+            voice_chunk = AudioSegment.from_file(chunk_path).set_channels(1)
+            timeline_parts.append(voice_chunk)
+            
+            cursor_ms = start_ms + len(voice_chunk)
+
+        # Preenche o restante do tempo com silêncio até o final do vídeo
+        total_dur_ms = int(duration * 1000)
+        final_gap = total_dur_ms - cursor_ms
+        if final_gap > 0:
+            timeline_parts.append(AudioSegment.silent(duration=final_gap, frame_rate=44100).set_channels(1))
+
+        # Consolida a faixa de voz
+        if timeline_parts:
+            # sum(lista, start) é a maneira eficiente de concatenar no Pydub
+            speech_track = sum(timeline_parts, AudioSegment.empty())
+        else:
+            speech_track = AudioSegment.silent(duration=total_dur_ms, frame_rate=44100).set_channels(1)
+
+        # Exporta faixa temporária
+        speech_track.export(str(speech_track_path), format="wav")
+        
+        # Limpeza Imediata de RAM (Strategy 7)
+        del speech_track
+        del timeline_parts
+        import gc
+        gc.collect()
+
+        # 3. Mixagem FFmpeg com Sidechain Compression (Strategy 1)
+        # Usa a faixa de voz para "empurrar" o volume do fundo para baixo automaticamente.
+        self.log("Executando mixagem final via FFmpeg Sidechain...")
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", str(orig_path),           # Input 0: Background (Stereo)
+            "-i", str(speech_track_path),   # Input 1: Vozes (Mono)
+            "-filter_complex",
+            # [1] divide o sinal da voz em 2: um para disparar o compressor, outro para mixar
+            "[1:a]asplit=2[sc][voice_mix];"
+            # Sidechain Compress: Quando [sc] (voz) toca, reduz [0:a] (fundo)
+            # threshold: sensibilidade (0.05 = ~-26dB)
+            # ratio: taxa de compressão (5:1)
+            # attack/release: suavidade (50ms/200ms)
+            "[0:a][sc]sidechaincompress=threshold=0.05:ratio=5:attack=50:release=200[ducked_bg];"
+            # Mix final: junta o fundo "duckado" com a voz. normalize=0 evita alteração de volume.
+            "[ducked_bg][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]",
+            "-map", "[out]",
+            str(output_mix)
+        ]
+
+        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if process.returncode != 0:
+            self.log(f"Erro no FFmpeg Mixing: {process.stderr.decode()}")
+            raise Exception("Falha na mixagem FFmpeg")
+
         context["final_audio_path"] = str(output_mix)
-
-        # Limpeza
-        del bg_audio
-        del final_audio
-        del ducked_bg
+        
+        # Remove arquivo temporário da faixa de voz para limpar disco
+        try:
+            speech_track_path.unlink()
+        except:
+            pass
 
         return context
 
-    def _apply_ducking(
-        self, original: AudioSegment, segments: List[Dict], gain_reduction: int = -15
-    ) -> AudioSegment:
-        """
-        Reconstroi o áudio original baixando o volume apenas nos intervalos de fala.
-        Agrupa falas próximas para evitar oscilação rápida de volume.
-        """
-        if not segments:
-            return original
-
-        # 1. Converter segmentos para milissegundos e ordenar
-        intervals = []
-        for seg in segments:
-            start_ms = int(seg["start"] * 1000)
-            end_ms = int(seg["end"] * 1000)
-            intervals.append([start_ms, end_ms])
-
-        intervals.sort(key=lambda x: x[0])
-
-        # 2. Fundir intervalos muito próximos (Gap < 500ms) para evitar "efeito sanfona"
-        merged = []
-        gap_threshold = 500  # ms
-
-        for start, end in intervals:
-            if not merged:
-                merged.append([start, end])
-                continue
-
-            last_start, last_end = merged[-1]
-
-            # Se o começo do atual é próximo do fim do anterior, funde
-            if start <= last_end + gap_threshold:
-                merged[-1][1] = max(last_end, end)
-            else:
-                merged.append([start, end])
-
-        # 3. Construir o novo áudio processado
-        final_audio = AudioSegment.empty()
-        last_pos = 0
-
-        # (Correção F841: Variável fade_ms removida pois não era usada)
-
-        for start, end in merged:
-            # Garante limites seguros
-            start = max(0, start)
-            end = min(len(original), end)
-
-            # Parte A: Volume Normal (do último ponto até o início da fala)
-            if start > last_pos:
-                normal_part = original[last_pos:start]
-                final_audio += normal_part
-
-            # Parte B: Volume Baixo (durante a fala)
-            # Aplica o ganho negativo
-            quiet_part = original[start:end].apply_gain(gain_reduction)
-
-            # Opcional: Aplicar fade in/out na parte baixa para transição suave
-            # quiet_part = quiet_part.fade_in(200).fade_out(200)
-
-            final_audio += quiet_part
-
-            last_pos = end
-
-        # Parte C: Volume Normal (restante do áudio)
-        if last_pos < len(original):
-            final_audio += original[last_pos:]
-
-        return final_audio
+    def _get_duration(self, file_path: Path) -> float:
+        """Obtém duração precisa usando FFprobe (evita carregar arquivo na RAM)."""
+        cmd = [
+            "ffprobe", 
+            "-v", "error", 
+            "-show_entries", "format=duration", 
+            "-of", "default=noprint_wrappers=1:nokey=1", 
+            str(file_path)
+        ]
+        try:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            return float(result.stdout.strip())
+        except Exception:
+            self.log("Aviso: Não foi possível obter duração via ffprobe. Usando fallback.")
+            return 0.0
 
 
 class RenderingPhase(PipelinePhase):
