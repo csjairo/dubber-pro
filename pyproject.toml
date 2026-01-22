@@ -16,6 +16,7 @@ dependencies = [
     "sacremoses>=0.1.1",
     "sentencepiece>=0.2.1",
     "soundfile>=0.13.1",
+    "taskipy>=1.14.1",
     "torch>=2.9.1",
     "torchaudio>=2.9.1",
     "torchvision>=0.24.1",

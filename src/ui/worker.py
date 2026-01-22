@@ -1,13 +1,7 @@
 from PyQt6.QtCore import QThread, pyqtSignal
 from pathlib import Path
 import traceback
-
-# O import é feito aqui dentro ou condicionalmente para evitar erros circulares
-# se o setup_environment não tiver sido rodado ainda.
-try:
-    from modules.dubber import Dubber
-except ImportError:
-    Dubber = None
+from src.modules.dubber import Dubber
 
 class DubbingWorker(QThread):
     log_signal = pyqtSignal(str)
