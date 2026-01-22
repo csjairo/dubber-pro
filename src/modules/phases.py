@@ -8,6 +8,8 @@ from typing import Dict
 import re
 import edge_tts
 
+from src.config import Config
+
 # Bibliotecas de Mídia
 from moviepy import VideoFileClip
 from pydub import AudioSegment
@@ -39,7 +41,7 @@ class ExtractionPhase(PipelinePhase):
             with VideoFileClip(str(video_path)) as video:
                 video.audio.write_audiofile(
                     str(output_audio),
-                    fps=44100,
+                    fps=Config.AUDIO_RATE,
                     nbytes=2,
                     codec="pcm_s16le",
                     logger=None,
@@ -66,11 +68,11 @@ class TranscriptionPhase(PipelinePhase):
         from faster_whisper import WhisperModel
 
         compute_type = "float16" if self.device == "cuda" else "int8"
-        model = WhisperModel("medium", device=self.device, compute_type=compute_type)
+        model = WhisperModel(Config.WHISPER_MODEL, device=self.device, compute_type=Config.WHISPER_COMPUTE)
 
         self.log("Iniciando transcrição...")
         segments_gen, _ = model.transcribe(
-            context["original_audio_path"], language="en", beam_size=5
+            context["original_audio_path"], language=Config.WHISPER_LANG, beam_size=Config.WHISPER_BEAM
         )
 
         segments = []
@@ -143,7 +145,7 @@ class TranslationPhase(PipelinePhase):
         self.log(f"Carregando MarianMT em {self.device}...")
         from transformers import MarianMTModel, MarianTokenizer
 
-        model_name = "Helsinki-NLP/opus-mt-tc-big-en-pt"
+        model_name = Config.TRANS_MODEL
         tokenizer = MarianTokenizer.from_pretrained(model_name)
         model = MarianMTModel.from_pretrained(model_name).to(self.device)
 
@@ -152,7 +154,7 @@ class TranslationPhase(PipelinePhase):
 
         self.log(f"Traduzindo {len(segments)} segmentos...")
 
-        batch_size = 32 if self.device != "cpu" else 8
+        batch_size = Config.TRANS_BATCH if self.device != "cpu" else 8
         texts = [s["text"] for s in segments]
         translated_texts = []
         inputs = None
@@ -203,7 +205,7 @@ class TTSPhase(PipelinePhase):
 
         self.log(f"Gerando {len(tasks)} arquivos de áudio...")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=Config.TTS_WORKERS) as executor:
             list(executor.map(self._generate_single, tasks))
 
         return context
@@ -220,7 +222,7 @@ class TTSPhase(PipelinePhase):
             self.log(f"Erro TTS: {e}")
 
     async def _synthesize(self, text, path, target_dur):
-        voice = "pt-BR-AntonioNeural"
+        voice = Config.TTS_VOICE
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(path)
 
@@ -348,7 +350,7 @@ class AudioMixingPhase(PipelinePhase):
         cmd = [
             "ffmpeg", "-y", "-i", str(orig_path), "-i", str(speech_track_path),
             "-filter_complex",
-            "[1:a]asplit=2[sc][voice_mix];[0:a][sc]sidechaincompress=threshold=0.05:ratio=5:attack=50:release=200[ducked_bg];[ducked_bg][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]",
+            f"[1:a]asplit=2[sc][voice_mix];[0:a][sc]sidechaincompress=threshold={Config.DUCK_THRESH}:ratio={Config.DUCK_ATTACK}:attack=50:release={Config.DUCK_RELEASE}[ducked_bg];[ducked_bg][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]",
             "-map", "[out]", str(output_mix)
         ]
 
@@ -391,7 +393,7 @@ class RenderingPhase(PipelinePhase):
         video_path = context["video_path"]
         audio_path = context["final_audio_path"]
 
-        output_video = self.base_dir / f"{Path(video_path).stem}_DUB_PRO.mp4"
+        output_video = self.base_dir / f"{Path(video_path).stem}{Config.OUTPUT_SUFFIX}.mp4"
 
         cmd = [
             "ffmpeg",
