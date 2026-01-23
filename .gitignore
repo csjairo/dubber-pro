@@ -1,56 +1,57 @@
-# =========================
-# Python
-# =========================
-__pycache__/
-*.py[cod]
-*$py.class
-
-# =========================
-# Ambientes virtuais
-# =========================
+# Ambiente virtual Python
 .venv/
-.venv-dml
 venv/
-env/
 ENV/
 
-# =========================
-# Build / Distribuição
-# =========================
+# Variáveis de ambiente
+.env
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Build / distribuição Python
 build/
 dist/
 *.egg-info/
-.eggs/
 
-# =========================
-# PyInstaller
-# =========================
-*.spec
-# (se quiser versionar o dubberpro.spec, remova a linha acima)
+# CMake / C++
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
 
-# =========================
-# Cache e logs
-# =========================
-.pytest_cache/
-.mypy_cache/
-.cache/
-*.log
+# Builds nativos (se gerar pasta build/)
+native/build/
+native/**/build/
 
-# =========================
-# Ferramentas e IDEs
-# =========================
+# VS Code
 .vscode/
-.idea/
-*.swp
-*.swo
 
-# =========================
-# Sistema Operacional
-# =========================
+# Ferramentas locais / binários externos
+bin/ffmpeg.exe
+bin/ffprobe.exe
+
+# Logs e temporários
+*.log
+*.tmp
+
+# Sistema operacional
 .DS_Store
 Thumbs.db
 
-# =========================
-# Outros
-# =========================
-.python-version
+# Ferramentas de empacotamento
+*.spec.local
+
+# Modelos de IA baixados
+engine/models/

@@ -18,6 +18,11 @@ from pydub.effects import normalize
 # Importações locais
 from .pipeline import PipelinePhase
 
+# Intermediação C++ acelerada por GPU
+import numpy as np
+import dubber_engine  # O módulo C++ que compilamos
+from transformers import MarianTokenizer
+
 # ==========================================
 # FASES DE PROCESSAMENTO
 # ==========================================
@@ -169,64 +174,109 @@ class PostProcessingPhase(PipelinePhase):
 
 
 class TranslationPhase(PipelinePhase):
-    """Fase 3: Traduz texto usando MarianMT (HuggingFace)."""
+    """Fase 3: Traduz texto usando C++ Engine (ONNX)."""
 
     def execute(self, context: Dict) -> Dict:
         segments = context.get("segments", [])
-
         if not segments:
-            self.log("Nenhum segmento detectado para tradução.")
+            self.log("Nenhum segmento para tradução.")
             return context
 
-        if "text_pt" in segments[0] and context.get("use_cache"):
-            self.log("Tradução já presente nos segmentos.")
-            return context
-
-        self.log(f"Carregando MarianMT em {self.device}...")
-        from transformers import MarianMTModel, MarianTokenizer
-
-        model_name = Config.TRANS_MODEL
-        tokenizer = MarianTokenizer.from_pretrained(model_name)
+        # Caminhos dos modelos exportados (confirme se estão nestas pastas)
+        encoder_path = "models/marian_onnx/encoder_model.onnx"
+        decoder_path = "models/marian_onnx/decoder_model.onnx" 
+        # Nota: Use o decoder_model.onnx simples (sem past_key_values) para esta v1, 
+        # ou ajuste os inputs se usar o 'merged'.
         
-        # 'self.device' agora está limpo (sem backend info)
-        model = MarianMTModel.from_pretrained(model_name).to(self.device)
+        use_gpu = (self.device == "cuda")
 
-        # Otimização FP16 apenas para CUDA/MPS explícitos
-        if isinstance(self.device, str) and self.device in ["cuda", "mps"]:
-            model = model.half()
+        self.log(f"Carregando Engine C++ em {self.device}...")
+        
+        # 1. Carrega Tokenizador (Leve, CPU)
+        tokenizer = MarianTokenizer.from_pretrained(Config.TRANS_MODEL)
+        
+        # 2. Carrega Motores C++ (Pesado, GPU/CPU Otimizado)
+        try:
+            encoder_engine = dubber_engine.OnnxWrapper(encoder_path, use_gpu)
+            decoder_engine = dubber_engine.OnnxWrapper(decoder_path, use_gpu)
+        except Exception as e:
+            self.log(f"Erro ao carregar DLLs C++: {e}")
+            raise e
 
-        self.log(f"Traduzindo {len(segments)} segmentos...")
-
-        # Se for CPU ou DirectML (objeto torch.device), usa batch menor se necessário
-        is_gpu = str(self.device) != "cpu"
-        batch_size = Config.TRANS_BATCH if is_gpu else 8
+        self.log(f"Traduzindo {len(segments)} segmentos via ONNX...")
         
         texts = [s["text"] for s in segments]
         translated_texts = []
-        inputs = None
 
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            inputs = tokenizer(
-                batch, return_tensors="pt", padding=True, truncation=True
-            ).to(self.device)
-            with torch.inference_mode():
-                outputs = model.generate(**inputs)
-            decoded = [tokenizer.decode(t, skip_special_tokens=True) for t in outputs]
-            translated_texts.extend(decoded)
+        # Processamento em Batch (Aqui batch=1 para simplicidade e segurança de memória inicial)
+        for text in texts:
+            if not text.strip():
+                translated_texts.append("")
+                continue
 
+            # --- Passo A: Tokenização ---
+            tokens = tokenizer(text, return_tensors="np", padding=True)
+            input_ids = tokens["input_ids"].astype(np.int64)
+            attention_mask = tokens["attention_mask"].astype(np.int64)
+
+            # --- Passo B: Encoder (C++) ---
+            # Input names devem bater com o que o ONNX espera (input_ids, attention_mask)
+            enc_inputs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask
+            }
+            # O Encoder retorna 'last_hidden_state'
+            enc_outs = encoder_engine.infer(enc_inputs)
+            encoder_hidden_state = enc_outs[0] # Assumindo ser o primeiro output
+
+            # --- Passo C: Decoder Loop (Greedy Search Manual) ---
+            # Começa com o token de início (Pad token no MarianMT costuma ser o start)
+            decoder_input_ids = np.array([[tokenizer.pad_token_id]], dtype=np.int64)
+            
+            MAX_LEN = 128
+            for _ in range(MAX_LEN):
+                dec_inputs = {
+                    "input_ids": decoder_input_ids,
+                    "encoder_attention_mask": attention_mask,
+                    "encoder_hidden_states": encoder_hidden_state
+                }
+                
+                # Roda Decoder no C++
+                # Retorna logits: (batch, seq_len, vocab_size)
+                dec_outs = decoder_engine.infer(dec_inputs)
+                logits = dec_outs[0]
+                
+                # Pega o último token gerado (argmax)
+                next_token_logits = logits[0, -1, :]
+                next_token_id = np.argmax(next_token_logits)
+                
+                # Condição de Parada (EOS)
+                if next_token_id == tokenizer.eos_token_id:
+                    break
+                
+                # Adiciona ao input do decoder para o próximo loop
+                # (Ineficiente sem KV Cache, mas funcional para v1)
+                decoder_input_ids = np.append(decoder_input_ids, [[next_token_id]], axis=1)
+
+            # --- Passo D: Detokenização ---
+            # Pula o primeiro token (start)
+            output_tokens = decoder_input_ids[0]
+            trans_text = tokenizer.decode(output_tokens, skip_special_tokens=True)
+            translated_texts.append(trans_text)
+
+        # Atualiza resultado
         for i, txt in enumerate(translated_texts):
             segments[i]["text_pt"] = txt
 
+        # Salva (Código original mantido)
         with open(self.base_dir / "segments.json", "w", encoding="utf-8") as f:
+            import json
             json.dump(segments, f, ensure_ascii=False, indent=2)
 
-        self.log("Descarregando MarianMT...")
-        del model
-        del tokenizer
-        if inputs is not None:
-            del inputs
-
+        # Limpeza explícita C++
+        del encoder_engine
+        del decoder_engine
+        
         return context
 
 
