@@ -12,7 +12,7 @@ class Config:
     # Whisper
     WHISPER_MODEL = os.getenv("WHISPER_MODEL_SIZE", "medium")
     WHISPER_LANG = os.getenv("WHISPER_SOURCE_LANG", "en")
-    WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
+    WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
     WHISPER_BEAM = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
     
     # Tradução
@@ -26,5 +26,5 @@ class Config:
     # Ducking
     DUCK_THRESH = os.getenv("DUCKING_THRESHOLD", "0.05")
     DUCK_RATIO = os.getenv("DUCKING_RATIO", "5")
-    DUCK_ATTACK = os.getenv("DUCKING_ATTACK", "50")
+    DUCK_ATTACK = os.getenv("DUCKING_ATTACK", "20")
     DUCK_RELEASE = os.getenv("DUCKING_RELEASE", "200")
