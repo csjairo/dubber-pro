@@ -261,7 +261,7 @@ class TTSPhase(PipelinePhase):
 
 
 class AudioMixingPhase(PipelinePhase):
-    """Fase 5: Mixagem Otimizada com FFmpeg (Sidechain Ducking)."""
+    """Fase 5: Mixagem Profissional com Sidechain Ducking (FFmpeg)."""
 
     def execute(self, context: Dict) -> Dict:
         output_mix = self.base_dir / "final_mix.wav"
@@ -270,8 +270,6 @@ class AudioMixingPhase(PipelinePhase):
             self.log("Mixagem já existe (Cache).")
             context["final_audio_path"] = str(output_mix)
             return context
-
-        self.log("Iniciando mixagem com correção de sincronia (Anti-Drift)...")
 
         orig_path = Path(context["original_audio_path"])
         segments = context["segments"]
@@ -283,8 +281,9 @@ class AudioMixingPhase(PipelinePhase):
             duration = self._get_duration(orig_path)
             context["video_duration"] = duration
 
-        self.log(f"Montando faixa de voz ({duration:.2f}s) em Mono...")
+        self.log(f"Montando faixa de voz sincronizada ({duration:.2f}s)...")
         
+        # --- Lógica de montagem da trilha de voz (Timeline) ---
         timeline_parts = []
         cursor_ms = 0
         segments.sort(key=lambda x: x["start"])
@@ -305,57 +304,67 @@ class AudioMixingPhase(PipelinePhase):
             
             voice_chunk = AudioSegment.from_file(chunk_path).set_channels(1)
 
+            # Ajuste de velocidade (Anti-Drift) para evitar sobreposição
             if i < len(segments) - 1:
                 next_start_ms = int(segments[i+1]["start"] * 1000)
                 time_until_next = next_start_ms - cursor_ms 
                 
                 if len(voice_chunk) > time_until_next and time_until_next > 100:
-                    self.log(f"⚠️ Ajustando segmento {i}: {len(voice_chunk)}ms -> {time_until_next}ms")
                     ratio = len(voice_chunk) / time_until_next 
-                    if ratio > 1.0:
-                        voice_chunk = speedup(voice_chunk, playback_speed=ratio * 1.05, chunk_size=50, crossfade=0)
-                        if len(voice_chunk) > time_until_next:
-                             voice_chunk = voice_chunk[:time_until_next]
+                    voice_chunk = speedup(voice_chunk, playback_speed=max(1.0, ratio * 1.05))
+                    if len(voice_chunk) > time_until_next:
+                        voice_chunk = voice_chunk[:time_until_next]
 
             timeline_parts.append(voice_chunk)
             cursor_ms += len(voice_chunk)
 
+        # Preenche o final com silêncio para manter a duração do vídeo
         total_dur_ms = int(duration * 1000)
-        final_gap = total_dur_ms - cursor_ms
-        if final_gap > 0:
-            timeline_parts.append(AudioSegment.silent(duration=final_gap, frame_rate=44100).set_channels(1))
+        if total_dur_ms > cursor_ms:
+            timeline_parts.append(AudioSegment.silent(duration=total_dur_ms - cursor_ms, frame_rate=44100).set_channels(1))
 
-        if timeline_parts:
-            speech_track = sum(timeline_parts, AudioSegment.empty())
-        else:
-            speech_track = AudioSegment.silent(duration=total_dur_ms, frame_rate=44100).set_channels(1)
-
+        speech_track = sum(timeline_parts, AudioSegment.empty())
         speech_track.export(str(speech_track_path), format="wav")
+        
         del speech_track
         import gc
         gc.collect()
 
+        # --- IMPLEMENTAÇÃO DO AUTO-DUCKING VIA FFMPEG ---
+        self.log("Aplicando Sidechain Ducking (Voz sobre Trilha Original)...")
+
+        # Parâmetros de Ducking (Pode ajustar no seu src/config.py)
+        # threshold: Sensibilidade da detecção (-20dB ou 0.1)
+        # ratio: Força da redução (ex: 4:1)
+        # attack/release: Suavidade da transição (ms)
+        thresh = getattr(Config, 'DUCK_THRESH', 0.1)
+        ratio = getattr(Config, 'DUCK_RATIO', 4.0)
+        attack = 50 
+        release = 500
+
         cmd = [
-            "ffmpeg", "-y", "-i", str(orig_path), "-i", str(speech_track_path),
+            "ffmpeg", "-y",
+            "-i", str(orig_path),           # [0:a] Áudio Original
+            "-i", str(speech_track_path),    # [1:a] Áudio Dublado
             "-filter_complex",
-            f"[1:a]asplit=2[sc][voice_mix];[0:a][sc]sidechaincompress=threshold={Config.DUCK_THRESH}:ratio={Config.DUCK_ATTACK}:attack=50:release={Config.DUCK_RELEASE}[ducked_bg];[ducked_bg][voice_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]",
-            "-map", "[out]", str(output_mix)
+            # 1. Divide a voz em 'sc' (controle) e 'voice' (som final)
+            f"[1:a]asplit=2[sc][voice];" +
+            # 2. Comprime o áudio original [0:a] usando a voz [sc] como gatilho (sidechain)
+            f"[0:a][sc]sidechaincompress=threshold={thresh}:ratio={ratio}:attack={attack}:release={release}[bg_ducked];" +
+            # 3. Mistura o fundo rebaixado com a voz limpa
+            f"[bg_ducked][voice]amix=inputs=2:duration=first:dropout_transition=0[out]",
+            "-map", "[out]",
+            "-ac", "2",                     # Garante saída Stereo
+            str(output_mix)
         ]
 
         process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if process.returncode != 0:
-            raise Exception(f"Falha na mixagem FFmpeg: {process.stderr.decode()}")
+            self.log(f"Erro FFmpeg: {process.stderr.decode()}")
+            raise Exception("Falha na mixagem com Ducking.")
 
         context["final_audio_path"] = str(output_mix)
         return context
-
-    def _get_duration(self, file_path: Path) -> float:
-        cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(file_path)]
-        try:
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            return float(result.stdout.strip())
-        except:
-            return 0.0
 
 
 class RenderingPhase(PipelinePhase):
