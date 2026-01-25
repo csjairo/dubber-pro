@@ -1,7 +1,7 @@
 import os
+import webbrowser
 from pathlib import Path
 
-# Correção F401: QToolBar removido da importação
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -11,7 +11,9 @@ from PyQt6.QtWidgets import (
     QToolButton,
     QMenu,
 )
+# QAction movido para o local correto no PyQt6
 from PyQt6.QtGui import QFont, QAction
+from PyQt6.QtCore import Qt
 
 # Importações relativas dentro do pacote UI
 from .components.header import HeaderComponent
@@ -63,19 +65,18 @@ class MainWindow(QMainWindow):
         self.layout.addWidget(self.console)
 
     def setup_toolbar(self):
-        """Configura a toolbar com menu dropdown"""
+        """Configura a toolbar com menus dropdown organizados"""
         toolbar = self.addToolBar("MainToolbar")
         toolbar.setMovable(False)
 
-        # CSS Inline: Toolbar e Menu Dropdown
+        # CSS para Toolbar e Menus
         toolbar.setStyleSheet("""
             QToolBar {
                 background-color: white;
                 border-bottom: 1px solid #d0d0d0;
-                spacing: 10px;
+                spacing: 8px;
                 padding: 5px;
             }
-            /* Botões da Toolbar */
             QToolButton {
                 color: black;
                 font-family: "Segoe UI";
@@ -83,91 +84,117 @@ class MainWindow(QMainWindow):
                 font-weight: 500;
                 background-color: transparent;
                 border: none;
-                padding: 4px 10px;
-                margin: 0px;
+                padding: 5px 12px;
             }
             QToolButton:hover {
                 background-color: #f0f0f0;
-                border-radius: 3px;
+                border-radius: 4px;
             }
-            QToolButton:pressed {
-                background-color: #e0e0e0;
-            }
-            /* Menu Dropdown (Opções) */
             QMenu {
                 background-color: white;
                 border: 1px solid #d0d0d0;
                 font-family: "Segoe UI";
                 font-size: 10pt;
-                padding: 5px 0px;
+                padding: 4px 0px;
             }
             QMenu::item {
-                padding: 6px 25px; /* Espaçamento interno dos itens */
+                padding: 6px 30px;
                 color: black;
             }
             QMenu::item:selected {
-                background-color: #f0f0f0; /* Cor ao passar o mouse no item */
+                background-color: #f0f0f0;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #e0e0e0;
+                margin: 4px 0px;
             }
         """)
 
-        # 2. Menu "Opções" (Dropdown)
-        # Cria um botão especial para a toolbar
+        # --- Menu: Opções ---
         btn_options = QToolButton(self)
         btn_options.setText("Opções")
-        # Define que ao clicar, o menu abre imediatamente (InstantPopup)
         btn_options.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-
-        # Cria o menu container
         menu_options = QMenu(btn_options)
-
-        # Item: Configurações
+        
         act_settings = QAction("Configurações", self)
         act_settings.triggered.connect(self.open_settings)
         menu_options.addAction(act_settings)
-
-        # Item: Avançado
-        act_advanced = QAction("Avançado", self)
-        act_advanced.triggered.connect(self.open_advanced)
-        menu_options.addAction(act_advanced)
-
-        # Vincula o menu ao botão e adiciona à toolbar
+        
+        menu_options.addSeparator()
+        
+        act_exit = QAction("Sair", self)
+        act_exit.triggered.connect(self.close)
+        menu_options.addAction(act_exit)
+        
         btn_options.setMenu(menu_options)
         toolbar.addWidget(btn_options)
 
-        # 3. Help
-        act_help = QAction("Help", self)
-        act_help.triggered.connect(self.open_help)
-        toolbar.addAction(act_help)
+        # --- Menu: Exibir ---
+        btn_view = QToolButton(self)
+        btn_view.setText("Exibir")
+        btn_view.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_view = QMenu(btn_view)
+        
+        act_console = QAction("Console de Depuração", self)
+        act_console.setCheckable(True)
+        act_console.setChecked(True)
+        act_console.triggered.connect(self.toggle_console)
+        menu_view.addAction(act_console)
+        
+        btn_view.setMenu(menu_view)
+        toolbar.addWidget(btn_view)
 
-        # 4. Sobre
-        act_about = QAction("Sobre", self)
-        act_about.triggered.connect(self.show_about)
-        toolbar.addAction(act_about)
+        # --- Menu: Ajuda ---
+        btn_help = QToolButton(self)
+        btn_help.setText("Ajuda")
+        btn_help.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_help = QMenu(btn_help)
+        
+        act_github = QAction("Link para GitHub", self)
+        act_github.triggered.connect(self.open_github)
+        menu_help.addAction(act_github)
+        
+        btn_help.setMenu(menu_help)
+        toolbar.addWidget(btn_help)
 
-        # 1. Sair
-        act_exit = QAction("Sair", self)
-        act_exit.triggered.connect(self.close)
-        toolbar.addAction(act_exit)
+        # --- Menu: Sobre ---
+        btn_about = QToolButton(self)
+        btn_about.setText("Sobre")
+        btn_about.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_about = QMenu(btn_about)
+        
+        act_about_info = QAction("Informações sobre o projeto", self)
+        act_about_info.triggered.connect(self.show_about)
+        menu_about.addAction(act_about_info)
+        
+        btn_about.setMenu(menu_about)
+        toolbar.addWidget(btn_about)
 
-    # --- Actions Slots (Placeholders) ---
+    # --- Slots de Ação ---
+    def toggle_console(self, visible):
+        """Alterna a visibilidade do ConsoleComponent"""
+        self.console.setVisible(visible)
+
+    def open_github(self):
+        """Abre o repositório no navegador"""
+        webbrowser.open("https://github.com/csjairo/dubber-pro")
+
     def open_settings(self):
         QMessageBox.information(self, "Configurações", "Janela de configurações.")
 
-    def open_advanced(self):
-        QMessageBox.information(self, "Avançado", "Opções avançadas.")
-
-    def open_help(self):
-        QMessageBox.information(self, "Help", "Ajuda do sistema.")
-
     def show_about(self):
-        QMessageBox.about(self, "Sobre", "Dubber PRO v0.1.0")
+        QMessageBox.about(
+            self, 
+            "Sobre", 
+            "Dubber PRO v0.1.0\n\nSoftware de dublagem automática com IA."
+        )
 
     def load_styles(self):
         style_path = Path(resource_path(os.path.join("styles", "main.qss")))
         try:
             if style_path.exists():
                 with open(style_path, "r", encoding="utf-8") as f:
-                    # Carrega estilos globais, mas o CSS inline da Toolbar tem prioridade
                     self.setStyleSheet(f.read())
             else:
                 print(f"⚠️ Estilo não encontrado: {style_path}")
@@ -179,7 +206,6 @@ class MainWindow(QMainWindow):
         self.btn_run.setEnabled(True)
 
     def start_dubbing(self):
-        # Correção E701: Declaração em múltiplas linhas
         if not self.selected_file:
             return
 
