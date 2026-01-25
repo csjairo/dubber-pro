@@ -1,25 +1,36 @@
 [project]
 name = "dubber-pro"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Dubber PRO — Dublagem de Vídeos com IA."
 readme = "README.md"
-requires-python = ">=3.11"
+
+requires-python = ">=3.10,<3.15"
+
 dependencies = [
     "edge-tts>=7.2.7",
-    "faster-whisper>=1.2.1",
+    # Whisper
+    "faster-whisper>=1.2.1",    # CUDA / CPU
+    "openai-whisper>=20231117", # Fallback (CPU / DirectML)
+    # Áudio / Vídeo
     "librosa>=0.11.0",
     "moviepy>=2.2.1",
-    "openai-whisper>=20250625",
     "pydub>=0.25.1",
-    "pyinstaller>=6.18.0",
+    "soundfile>=0.13.1",
+    # NLP
+    "transformers>=4.40.0",
+    "sentencepiece>=0.2.1",
+    "sacremoses>=0.1.1",
+    # Torch (resolverá automaticamente a versão compatível com o Python)
+    "torch",
+    "torchaudio",
+    "torchvision",
+    # App
     "pyqt6>=6.10.2",
     "python-dotenv>=1.2.1",
-    "sacremoses>=0.1.1",
-    "sentencepiece>=0.2.1",
-    "soundfile>=0.13.1",
     "taskipy>=1.14.1",
-    "torch>=2.9.1",
-    "torchaudio>=2.9.1",
-    "torchvision>=0.24.1",
-    "transformers>=4.57.6",
+    # Build
+    "pyinstaller>=6.18.0",
+    "onnxruntime-gpu>=1.23.2",
+    "onnxruntime-directml>=1.23.0",
+    "optimum[onnxruntime]>=2.1.0",
 ]

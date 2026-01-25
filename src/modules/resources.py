@@ -1,35 +1,46 @@
 import torch
 import gc
-
+import logging
 
 class ResourceManager:
-    """Responsável por gerenciar recursos de hardware e limpeza de memória."""
+    """Gerencia recursos focando exclusivamente em NVIDIA CUDA e CPU."""
+    
+    _device_cache = None
 
     @staticmethod
     def get_best_device():
+        """
+        Retorna:
+            device_type (str): 'cuda' ou 'cpu'
+            backend_suggestion (str): 'faster-whisper'
+        """
+        if ResourceManager._device_cache:
+            return ResourceManager._device_cache
+
+        # Padrão: CPU
+        device_type = "cpu"
+        backend = "faster-whisper"
+
+        # Verificação Única: NVIDIA CUDA
         if torch.cuda.is_available():
-            return "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
+            device_type = "cuda"
+            backend = "faster-whisper"
+            # O backend 'faster-whisper' é altamente otimizado para CUDA (via CTranslate2)
+        
+        # Removemos verificações de MPS (Mac) e DirectML (AMD/Intel legado)
+
+        ResourceManager._device_cache = (device_type, backend)
+        return ResourceManager._device_cache
 
     @staticmethod
-    def force_cleanup(logger=None):
-        """Força a liberação de RAM e VRAM agressivamente."""
+    def force_cleanup(logger=print):
+        """Libera RAM e VRAM (CUDA)."""
         if logger:
             logger("🧹 Executando Garbage Collection e Limpeza de VRAM...")
 
-        # 1. Coleta de lixo do Python
         gc.collect()
 
-        # 2. Limpeza de Cache da NVIDIA
+        # Limpeza exclusiva para CUDA
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
-
-        # 3. Limpeza de Cache da Apple (MPS)
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            try:
-                torch.mps.empty_cache()
-            except Exception:
-                pass
