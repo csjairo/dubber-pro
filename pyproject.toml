@@ -9,8 +9,8 @@ requires-python = ">=3.10,<3.15"
 dependencies = [
     "edge-tts>=7.2.7",
     # Whisper
-    "faster-whisper>=1.2.1",       # CUDA / CPU
-    "openai-whisper>=20231117",    # Fallback (CPU / DirectML)
+    "faster-whisper>=1.2.1",    # CUDA / CPU
+    "openai-whisper>=20231117", # Fallback (CPU / DirectML)
     # Áudio / Vídeo
     "librosa>=0.11.0",
     "moviepy>=2.2.1",
@@ -32,7 +32,5 @@ dependencies = [
     "pyinstaller>=6.18.0",
     "onnxruntime-gpu>=1.23.2",
     "onnxruntime-directml>=1.23.0",
-    "pybind11>=3.0.1",
-    "cmake>=4.2.1",
     "optimum[onnxruntime]>=2.1.0",
 ]

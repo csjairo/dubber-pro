@@ -18,9 +18,7 @@ from pydub.effects import normalize
 # Importações locais
 from .pipeline import PipelinePhase
 
-# Intermediação C++ acelerada por GPU
 import numpy as np
-import dubber_engine  # O módulo C++ que compilamos
 from transformers import MarianTokenizer
 
 # ==========================================
