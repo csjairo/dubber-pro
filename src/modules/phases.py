@@ -18,6 +18,11 @@ from pydub.effects import normalize
 # Importações locais
 from .pipeline import PipelinePhase
 
+# Intermediação C++ acelerada por GPU
+import numpy as np
+import dubber_engine  # O módulo C++ que compilamos
+from transformers import MarianTokenizer
+
 # ==========================================
 # FASES DE PROCESSAMENTO
 # ==========================================
@@ -31,7 +36,6 @@ class ExtractionPhase(PipelinePhase):
 
         if output_audio.exists() and context.get("use_cache"):
             self.log("Arquivo de áudio já existe (Cache).")
-            # Tenta recuperar a duração do arquivo existente para o contexto
             try:
                 context["video_duration"] = AudioSegment.from_file(output_audio).duration_seconds
             except:
@@ -53,7 +57,7 @@ class ExtractionPhase(PipelinePhase):
 
 
 class TranscriptionPhase(PipelinePhase):
-    """Fase 2: Transcreve áudio usando Faster-Whisper."""
+    """Fase 2: Transcreve áudio (Suporta Faster-Whisper e OpenAI-Whisper)."""
 
     def execute(self, context: Dict) -> Dict:
         segments_path = self.base_dir / "segments.json"
@@ -64,30 +68,71 @@ class TranscriptionPhase(PipelinePhase):
                 context["segments"] = json.load(f)
             return context
 
-        self.log(f"Carregando WhisperModel em {self.device}...")
-        from faster_whisper import WhisperModel
-
-        compute_type = "float16" if self.device == "cuda" else "int8"
-        model = WhisperModel(Config.WHISPER_MODEL, device=self.device, compute_type=Config.WHISPER_COMPUTE)
-
-        self.log("Iniciando transcrição...")
-        segments_gen, _ = model.transcribe(
-            context["original_audio_path"], language=Config.WHISPER_LANG, beam_size=Config.WHISPER_BEAM
-        )
-
         segments = []
-        for seg in segments_gen:
-            segments.append(
-                {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+
+        # ====================================================
+        # MODO 1: Faster Whisper (NVIDIA / CPU Otimizado)
+        # ====================================================
+        if self.backend == "faster-whisper":
+            self.log(f"Carregando Faster-Whisper em {self.device}...")
+            from faster_whisper import WhisperModel
+
+            # Ajusta precisão baseado no hardware
+            if self.device == "cuda":
+                compute_type = Config.WHISPER_COMPUTE # float16 geralmente
+            else:
+                compute_type = "int8" # CPU/Outros
+
+            model = WhisperModel(Config.WHISPER_MODEL, device=self.device, compute_type=compute_type)
+
+            self.log("Iniciando transcrição (Faster)...")
+            segments_gen, _ = model.transcribe(
+                context["original_audio_path"], 
+                language=Config.WHISPER_LANG, 
+                beam_size=Config.WHISPER_BEAM
             )
 
+            for seg in segments_gen:
+                segments.append(
+                    {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+                )
+            
+            del model
+
+        # ====================================================
+        # MODO 2: OpenAI Whisper (DirectML / Legacy / MPS)
+        # ====================================================
+        else:
+            self.log(f"Carregando OpenAI-Whisper (Legacy) em {self.device}...")
+            import whisper
+
+            # Nota: 'self.device' aqui pode ser um objeto torch.device (DirectML) ou string
+            # O whisper.load_model suporta ambos.
+            model = whisper.load_model(Config.WHISPER_MODEL, device=self.device)
+
+            self.log("Iniciando transcrição (Standard)...")
+            
+            # OpenAI Whisper retorna um dict completo, não um generator
+            result = model.transcribe(
+                context["original_audio_path"],
+                language=Config.WHISPER_LANG,
+                beam_size=Config.WHISPER_BEAM,
+                fp16=False # Forçar FP32 para evitar erros em DirectML/CPU antigo
+            )
+
+            for seg in result.get("segments", []):
+                segments.append(
+                    {"start": seg["start"], "end": seg["end"], "text": seg["text"].strip()}
+                )
+            
+            del model
+
+        # Salva resultados
         with open(segments_path, "w", encoding="utf-8") as f:
             json.dump(segments, f, ensure_ascii=False, indent=2)
 
         context["segments"] = segments
-
-        self.log("Descarregando Whisper...")
-        del model
+        self.log(f"Transcrição concluída ({len(segments)} segmentos).")
         return context
 
 
@@ -129,58 +174,109 @@ class PostProcessingPhase(PipelinePhase):
 
 
 class TranslationPhase(PipelinePhase):
-    """Fase 3: Traduz texto usando MarianMT (HuggingFace)."""
+    """Fase 3: Traduz texto usando C++ Engine (ONNX)."""
 
     def execute(self, context: Dict) -> Dict:
         segments = context.get("segments", [])
-
         if not segments:
-            self.log("Nenhum segmento detectado para tradução.")
+            self.log("Nenhum segmento para tradução.")
             return context
 
-        if "text_pt" in segments[0] and context.get("use_cache"):
-            self.log("Tradução já presente nos segmentos.")
-            return context
+        # Caminhos dos modelos exportados (confirme se estão nestas pastas)
+        encoder_path = "models/marian_onnx/encoder_model.onnx"
+        decoder_path = "models/marian_onnx/decoder_model.onnx" 
+        # Nota: Use o decoder_model.onnx simples (sem past_key_values) para esta v1, 
+        # ou ajuste os inputs se usar o 'merged'.
+        
+        use_gpu = (self.device == "cuda")
 
-        self.log(f"Carregando MarianMT em {self.device}...")
-        from transformers import MarianMTModel, MarianTokenizer
+        self.log(f"Carregando Engine C++ em {self.device}...")
+        
+        # 1. Carrega Tokenizador (Leve, CPU)
+        tokenizer = MarianTokenizer.from_pretrained(Config.TRANS_MODEL)
+        
+        # 2. Carrega Motores C++ (Pesado, GPU/CPU Otimizado)
+        try:
+            encoder_engine = dubber_engine.OnnxWrapper(encoder_path, use_gpu)
+            decoder_engine = dubber_engine.OnnxWrapper(decoder_path, use_gpu)
+        except Exception as e:
+            self.log(f"Erro ao carregar DLLs C++: {e}")
+            raise e
 
-        model_name = Config.TRANS_MODEL
-        tokenizer = MarianTokenizer.from_pretrained(model_name)
-        model = MarianMTModel.from_pretrained(model_name).to(self.device)
-
-        if self.device in ["cuda", "mps"]:
-            model = model.half()
-
-        self.log(f"Traduzindo {len(segments)} segmentos...")
-
-        batch_size = Config.TRANS_BATCH if self.device != "cpu" else 8
+        self.log(f"Traduzindo {len(segments)} segmentos via ONNX...")
+        
         texts = [s["text"] for s in segments]
         translated_texts = []
-        inputs = None
 
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            inputs = tokenizer(
-                batch, return_tensors="pt", padding=True, truncation=True
-            ).to(self.device)
-            with torch.inference_mode():
-                outputs = model.generate(**inputs)
-            decoded = [tokenizer.decode(t, skip_special_tokens=True) for t in outputs]
-            translated_texts.extend(decoded)
+        # Processamento em Batch (Aqui batch=1 para simplicidade e segurança de memória inicial)
+        for text in texts:
+            if not text.strip():
+                translated_texts.append("")
+                continue
 
+            # --- Passo A: Tokenização ---
+            tokens = tokenizer(text, return_tensors="np", padding=True)
+            input_ids = tokens["input_ids"].astype(np.int64)
+            attention_mask = tokens["attention_mask"].astype(np.int64)
+
+            # --- Passo B: Encoder (C++) ---
+            # Input names devem bater com o que o ONNX espera (input_ids, attention_mask)
+            enc_inputs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask
+            }
+            # O Encoder retorna 'last_hidden_state'
+            enc_outs = encoder_engine.infer(enc_inputs)
+            encoder_hidden_state = enc_outs[0] # Assumindo ser o primeiro output
+
+            # --- Passo C: Decoder Loop (Greedy Search Manual) ---
+            # Começa com o token de início (Pad token no MarianMT costuma ser o start)
+            decoder_input_ids = np.array([[tokenizer.pad_token_id]], dtype=np.int64)
+            
+            MAX_LEN = 128
+            for _ in range(MAX_LEN):
+                dec_inputs = {
+                    "input_ids": decoder_input_ids,
+                    "encoder_attention_mask": attention_mask,
+                    "encoder_hidden_states": encoder_hidden_state
+                }
+                
+                # Roda Decoder no C++
+                # Retorna logits: (batch, seq_len, vocab_size)
+                dec_outs = decoder_engine.infer(dec_inputs)
+                logits = dec_outs[0]
+                
+                # Pega o último token gerado (argmax)
+                next_token_logits = logits[0, -1, :]
+                next_token_id = np.argmax(next_token_logits)
+                
+                # Condição de Parada (EOS)
+                if next_token_id == tokenizer.eos_token_id:
+                    break
+                
+                # Adiciona ao input do decoder para o próximo loop
+                # (Ineficiente sem KV Cache, mas funcional para v1)
+                decoder_input_ids = np.append(decoder_input_ids, [[next_token_id]], axis=1)
+
+            # --- Passo D: Detokenização ---
+            # Pula o primeiro token (start)
+            output_tokens = decoder_input_ids[0]
+            trans_text = tokenizer.decode(output_tokens, skip_special_tokens=True)
+            translated_texts.append(trans_text)
+
+        # Atualiza resultado
         for i, txt in enumerate(translated_texts):
             segments[i]["text_pt"] = txt
 
+        # Salva (Código original mantido)
         with open(self.base_dir / "segments.json", "w", encoding="utf-8") as f:
+            import json
             json.dump(segments, f, ensure_ascii=False, indent=2)
 
-        self.log("Descarregando MarianMT...")
-        del model
-        del tokenizer
-        if inputs is not None:
-            del inputs
-
+        # Limpeza explícita C++
+        del encoder_engine
+        del decoder_engine
+        
         return context
 
 
@@ -282,13 +378,6 @@ class AudioMixingPhase(PipelinePhase):
 
             start_ms = int(seg["start"] * 1000)
             
-            # 1. Correção de Drift: Se o cursor já passou do tempo de início deste segmento,
-            # precisamos "voltar no tempo" ou aceitar o overlap.
-            # Como é concatenação linear, se cursor_ms > start_ms, já estamos atrasados.
-            # Neste caso, o gap é 0, mas o atraso persiste.
-            # O ideal é impedir que isso aconteça no segmento ANTERIOR.
-            # Mas como estamos no loop, vamos calcular o limite para o áudio ATUAL.
-            
             gap = start_ms - cursor_ms
 
             if gap > 0:
@@ -307,19 +396,11 @@ class AudioMixingPhase(PipelinePhase):
                 if len(voice_chunk) > time_until_next and time_until_next > 100:
                     self.log(f"⚠️ Ajustando segmento {i} para evitar cascata: {len(voice_chunk)}ms -> {time_until_next}ms")
                     
-                    # Calcula razão de aceleração necessária
-                    # Adicionamos 1.05 para garantir que fique um pouco menor e não cole
                     ratio = len(voice_chunk) / time_until_next 
                     
-                    # Se precisar acelerar muito (ex: > 1.5x), pode ficar ruim, mas garante a sync.
-                    # O speedup do pydub é básico, altera um pouco o tom se for agressivo, 
-                    # mas é melhor que perder a sincronia do vídeo todo.
                     if ratio > 1.0:
-                        # chunk_factor é a velocidade. Pydub speedup funciona em chunks.
-                        # Tenta acelerar para caber
                         voice_chunk = speedup(voice_chunk, playback_speed=ratio * 1.05, chunk_size=50, crossfade=0)
                         
-                        # Se ainda for maior (pode acontecer por arredondamento), corta o final
                         if len(voice_chunk) > time_until_next:
                              voice_chunk = voice_chunk[:time_until_next]
 
@@ -332,7 +413,6 @@ class AudioMixingPhase(PipelinePhase):
         if final_gap > 0:
             timeline_parts.append(AudioSegment.silent(duration=final_gap, frame_rate=44100).set_channels(1))
 
-        # Consolidação e Mixagem (igual ao original)
         if timeline_parts:
             speech_track = sum(timeline_parts, AudioSegment.empty())
         else:
@@ -344,9 +424,6 @@ class AudioMixingPhase(PipelinePhase):
         import gc
         gc.collect()
 
-        # ... (Restante do código do FFmpeg Sidechain igual) ...
-        # Copiar a parte do subprocess.run do seu código original aqui
-        
         cmd = [
             "ffmpeg", "-y", "-i", str(orig_path), "-i", str(speech_track_path),
             "-filter_complex",
