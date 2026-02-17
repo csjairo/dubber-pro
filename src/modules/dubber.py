@@ -1,13 +1,19 @@
 import shutil
 import traceback
+import hashlib
+import json
+import time
 from pathlib import Path
 from typing import List, Type
+
+from src.config import Config
 
 # Importações dos módulos refatorados
 from .resources import ResourceManager
 from .pipeline import PipelinePhase
 from .phases import (
     ExtractionPhase,
+    SeparationPhase,
     TranscriptionPhase,
     PostProcessingPhase,
     TranslationPhase,
@@ -32,9 +38,37 @@ class Dubber:
         else:
             print(msg)
 
+    def _build_pipeline_cache_key(self, video_path: Path) -> str:
+        if not video_path.exists():
+            raise FileNotFoundError(f"Arquivo de vídeo não encontrado: {video_path}")
+
+        stats = video_path.stat()
+        payload = {
+            "video_path": str(video_path),
+            "video_size": stats.st_size,
+            "video_mtime_ns": stats.st_mtime_ns,
+            "audio_rate": Config.AUDIO_RATE,
+            "whisper_model": Config.WHISPER_MODEL,
+            "whisper_lang": Config.WHISPER_LANG,
+            "whisper_beam": Config.WHISPER_BEAM,
+            "translation_model": Config.TRANS_MODEL,
+            "tts_voice": Config.TTS_VOICE,
+            "duck_threshold": Config.DUCK_THRESH,
+            "duck_ratio": Config.DUCK_RATIO,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+        ).hexdigest()
+        return digest
+
     def process(self, video_path: str, use_cache: bool = True):
         video_path = Path(video_path).resolve()
         parent_dir = video_path.parent
+
+        if not video_path.exists():
+            raise FileNotFoundError(f"Vídeo não encontrado: {video_path}")
+
+        pipeline_cache_key = self._build_pipeline_cache_key(video_path)
 
         # 1. Cria diretório temporário ao lado do arquivo original
         temp_dir_name = f"temp_{video_path.stem}"
@@ -42,17 +76,20 @@ class Dubber:
         temp_dir.mkdir(exist_ok=True)
 
         self.log(f"📁 Pasta temporária criada: {temp_dir}")
+        self.log(f"🧩 Cache key do pipeline: {pipeline_cache_key[:12]}...")
 
         context = {
             "video_path": str(video_path),
             "use_cache": use_cache,
             "segments": [],
             "project_dir": str(temp_dir),
+            "pipeline_cache_key": pipeline_cache_key,
         }
 
         # Lista de fases a serem executadas
         pipeline_classes: List[Type[PipelinePhase]] = [
             ExtractionPhase,
+            SeparationPhase,
             TranscriptionPhase,
             PostProcessingPhase,
             TranslationPhase,
@@ -62,12 +99,16 @@ class Dubber:
         ]
 
         try:
+            pipeline_start = time.perf_counter()
             for PhaseClass in pipeline_classes:
                 # Instancia fase apontando para o diretório temporário
                 phase = PhaseClass(temp_dir, self.log)
 
                 self.log(f"--- Iniciando Fase: {PhaseClass.__name__} ---")
+                phase_start = time.perf_counter()
                 context = phase.execute(context)
+                phase_elapsed = time.perf_counter() - phase_start
+                self.log(f"--- Fase concluída: {PhaseClass.__name__} ({phase_elapsed:.2f}s) ---")
 
                 # Limpeza explícita após cada fase
                 del phase
@@ -85,6 +126,7 @@ class Dubber:
 
             shutil.move(str(generated_video), str(final_destination))
             self.log(f"✅ Vídeo final salvo em: {final_destination}")
+            self.log(f"🏁 Pipeline finalizado em {time.perf_counter() - pipeline_start:.2f}s")
 
             return str(final_destination)
 
@@ -98,11 +140,14 @@ class Dubber:
             ResourceManager.force_cleanup()
 
             if temp_dir.exists():
-                try:
-                    self.log(
-                        f"🧹 Removendo arquivos temporários em: {temp_dir.name}..."
-                    )
-                    shutil.rmtree(temp_dir)
-                    self.log("✨ Limpeza concluída.")
-                except Exception as e:
-                    self.log(f"⚠️ Falha ao remover pasta temporária: {e}")
+                if use_cache:
+                    self.log(f"♻️ Cache preservado em: {temp_dir}")
+                else:
+                    try:
+                        self.log(
+                            f"🧹 Removendo arquivos temporários em: {temp_dir.name}..."
+                        )
+                        shutil.rmtree(temp_dir)
+                        self.log("✨ Limpeza concluída.")
+                    except Exception as e:
+                        self.log(f"⚠️ Falha ao remover pasta temporária: {e}")

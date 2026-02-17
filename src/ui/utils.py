@@ -31,6 +31,6 @@ def setup_environment():
         os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg_path)
         # Configura especificamente para imageio/moviepy
         os.environ["IMAGEIO_FFMPEG_EXE"] = ffmpeg_path
-        print(f"✅ FFmpeg configurado internamente: {ffmpeg_path}")
+        print(f"[OK] FFmpeg configurado internamente: {ffmpeg_path}")
     else:
-        print("⚠️ FFmpeg não encontrado na pasta 'bin'. Usando instalação global.")
+        print("[WARN] FFmpeg não encontrado na pasta 'bin'. Usando instalação global.")

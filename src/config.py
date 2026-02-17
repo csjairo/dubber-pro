@@ -22,9 +22,19 @@ class Config:
     # TTS
     TTS_VOICE = os.getenv("TTS_VOICE", "pt-BR-AntonioNeural")
     TTS_WORKERS = int(os.getenv("TTS_MAX_WORKERS", "5"))
+
+    # Separação / realce para transcrição
+    SOURCE_SEPARATION_ENABLED = os.getenv("ENABLE_SOURCE_SEPARATION", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    SEPARATION_HIGHPASS_HZ = int(os.getenv("SEPARATION_HIGHPASS_HZ", "120"))
+    SEPARATION_LOWPASS_HZ = int(os.getenv("SEPARATION_LOWPASS_HZ", "7500"))
     
     # Ducking
-    DUCK_THRESH = os.getenv("DUCKING_THRESHOLD", "0.05")
-    DUCK_RATIO = os.getenv("DUCKING_RATIO", "5")
-    DUCK_ATTACK = os.getenv("DUCKING_ATTACK", "20")
-    DUCK_RELEASE = os.getenv("DUCKING_RELEASE", "200")
+    DUCK_THRESH = float(os.getenv("DUCKING_THRESHOLD", "0.05"))
+    DUCK_RATIO = float(os.getenv("DUCKING_RATIO", "5"))
+    DUCK_ATTACK = int(os.getenv("DUCKING_ATTACK", "20"))
+    DUCK_RELEASE = int(os.getenv("DUCKING_RELEASE", "200"))
